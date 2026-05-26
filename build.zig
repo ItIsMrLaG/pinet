@@ -14,11 +14,18 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    const vm_mod = b.addModule("vm", .{
+        .root_source_file = b.path("src/vm.zig"),
+        .target = target,
+    });
+
     const mod = b.addModule("pinet", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .imports = &.{
             .{ .name = "lexer", .module = lexer_mod },
+            .{ .name = "parser", .module = parser_mod },
+            .{ .name = "vm", .module = vm_mod },
         },
     });
 
@@ -56,10 +63,14 @@ pub fn build(b: *std.Build) void {
     const parser_tests = b.addTest(.{
         .root_module = parser_mod,
     });
+    const vm_tests = b.addTest(.{
+        .root_module = vm_mod,
+    });
 
     const run_mod_tests = b.addRunArtifact(mod_tests);
     const run_lexer_tests = b.addRunArtifact(lexer_tests);
     const run_parser_tests = b.addRunArtifact(parser_tests);
+    const run_vm_tests = b.addRunArtifact(vm_tests);
 
     const exe_tests = b.addTest(.{
         .root_module = exe.root_module,
@@ -72,4 +83,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_lexer_tests.step);
     test_step.dependOn(&run_parser_tests.step);
+    test_step.dependOn(&run_vm_tests.step);
 }

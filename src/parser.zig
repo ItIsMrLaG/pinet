@@ -24,17 +24,17 @@ const Name = struct {
 // or to allow Z without ()
 const Object = struct {
     name: []const u8,
-    portlist: ?[]*Node(Object),
+    portlist: ?[]Node(Object),
 };
 
 const ActivePair = struct {
-    lhs: *Node(Object),
-    rhs: *Node(Object),
+    lhs: Node(Object),
+    rhs: Node(Object),
 };
 
 const Rule = struct {
-    lhs: *Node(Object),
-    rhs: *Node(Object),
+    lhs: Node(Object),
+    rhs: Node(Object),
     pairs: []Node(ActivePair),
 };
 
@@ -42,7 +42,12 @@ const Statement = union(enum) {
     free_stmt: []const Name,
     active_pair: ActivePair,
     rule: Rule,
+    use_stmt, // TODO
     const_stmt,
+};
+
+const Program = struct {
+    statements: []Node(Statement),
 };
 
 const ParserError = struct {
@@ -81,6 +86,8 @@ const Parser = struct {
 
     err: ?ParserError,
 
+    reached_eof: bool,
+
     pub fn init(tokens: []const Token, gpa: std.mem.Allocator) Parser {
         var arena = std.heap.ArenaAllocator.init(gpa);
         return .{
@@ -88,6 +95,7 @@ const Parser = struct {
             .index = 0,
             ._arena = arena,
             .allocator = arena.allocator(),
+            .reached_eof = false,
             .err = null,
         };
     }
@@ -112,8 +120,8 @@ const Parser = struct {
         return self.tokens[self.index - 1];
     }
 
-    fn parseObjList(self: *Parser) error{ OutOfMemory, ErrorDuringParsing }![]*Node(Object) {
-        var list = std.ArrayList(*Node(Object)).empty;
+    fn parseObjList(self: *Parser) error{ OutOfMemory, ErrorDuringParsing }![]Node(Object) {
+        var list = std.ArrayList(Node(Object)).empty;
         const objt = self.peek();
         objtoken: switch (objt.tag) {
             .rparen => {
@@ -138,12 +146,10 @@ const Parser = struct {
         return list.items;
     }
 
-    fn parseObject(self: *Parser) !*Node(Object) {
+    fn parseObject(self: *Parser) !Node(Object) {
         // TODO: tuples have no name: (a,b,c) is an object
         const tentry = self.advance();
-        var ret = try self.allocator.create(Node(Object));
-        errdefer self.allocator.destroy(ret);
-        ret.* = .{ .val = undefined, .tslice = .{ .start = @intCast(self.index - 1), .end = undefined } };
+        var ret: Node(Object) = .{ .val = undefined, .tslice = .{ .start = @intCast(self.index - 1), .end = undefined } };
         defer ret.tslice.end = @intCast(self.index - 1);
         try self.expectTag(.identifier, tentry.tag);
         ret.val.name = tentry.content.?;
@@ -198,14 +204,15 @@ const Parser = struct {
         return list.items;
     }
 
-    pub fn parseStmt(self: *Parser) !?*Node(Statement) {
+    pub fn parseStmt(self: *Parser) !?Node(Statement) {
         const tentry = self.peek();
-        var ret = try self.allocator.create(Node(Statement));
-        ret.* = .{ .val = undefined, .tslice = .{ .start = @intCast(self.index), .end = undefined } };
+        var ret: Node(Statement) = .{ .val = undefined, .tslice = .{ .start = @intCast(self.index), .end = undefined } };
         switch (tentry.tag) {
             .eof, .semicolon => {
+                if (tentry.tag == .eof) {
+                    self.reached_eof = true;
+                }
                 _ = self.advance();
-                self.allocator.destroy(ret);
                 return null;
             },
             .keyword_free => {
@@ -250,6 +257,17 @@ const Parser = struct {
 
         ret.tslice.end = @intCast(self.index - 1);
         return ret;
+    }
+
+    pub fn parseProgram(self: *Parser) ![]Program {
+        var list = std.ArrayList(Node(Statement));
+        var maybe_stmt = try self.parseStmt();
+        while (!self.reached_eof) : (maybe_stmt = try self.parseStmt) {
+            if (maybe_stmt) |stmt| {
+                list.append(self.allocator, stmt);
+            }
+        }
+        return list.items;
     }
 
     fn parseNameList(self: *Parser) ![]Name {
@@ -347,8 +365,4 @@ test "free stmt" {
         },
         else => unreachable,
     }
-}
-
-test "parser test" {
-    try std.testing.expect(true);
 }
