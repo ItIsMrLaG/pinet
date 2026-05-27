@@ -1,2 +1,6 @@
-b ~ HelloWorld(A(), B(c, d));
-b;
+a ~ b;
+b ~ c;
+c ~ Hello(d);
+d ~ g;
+g ~ World();
+a;

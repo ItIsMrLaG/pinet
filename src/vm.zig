@@ -105,6 +105,7 @@ pub fn getAgentSymbol(vm: *const VirtualMachine, ag: *const Agent) ![]const u8 {
             }
         }
     }
+    try stream.write(")", .{});
     return stream.buffer;
 }
 
@@ -151,12 +152,24 @@ pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
         }
         return Value{ .agent = agent };
     } else {
-        if (vm.runtime.associated_names.get(obj.name)) |name| {
-            if (name.port) |port| {
-                // free name
-                return port;
-            } else {
-                return error.UnassociatedName;
+        if (vm.runtime.associated_names.getPtr(obj.name)) |maybe_name| {
+            if (maybe_name.*) |name| {
+                if (name.port) |port| {
+                    // if the names are interconnected, then
+                    // we have to free from the cyclic crossreference
+                    if (port == .name) {
+                        if (port.name.port) |other_name| {
+                            if (other_name == .name and other_name.name == name) {
+                                port.name.port = null;
+                            }
+                        }
+                    }
+                    // free name
+                    maybe_name.* = null;
+                    return port;
+                } else {
+                    return .{ .name = name };
+                }
             }
         } else {
             const name = try vm.name_heap.getOne();
@@ -178,6 +191,11 @@ pub fn evalEquation(vm: *VirtualMachine, eq: Equation) !void {
     if (eq.lhs == .name and eq.rhs == .name) {
         if (eq.lhs.name.port) |lport| {
             if (eq.rhs.name.port) |rport| {
+                if (lport == .name) {
+                    if (lport.name == eq.rhs.name) {
+                        return;
+                    }
+                }
                 const new_eq = Equation{
                     .lhs = lport,
                     .rhs = rport,
@@ -195,6 +213,7 @@ pub fn evalEquation(vm: *VirtualMachine, eq: Equation) !void {
                 eq.rhs.name.port = eq.lhs;
             }
         }
+        return;
     }
     {
         var name: *Name = undefined;
@@ -206,6 +225,7 @@ pub fn evalEquation(vm: *VirtualMachine, eq: Equation) !void {
             name = eq.rhs.name;
             agent = eq.lhs.agent;
         } else {
+            std.debug.print("{s} - {s} pair\n", .{ @tagName(eq.lhs), @tagName(eq.rhs) });
             return;
         }
 
@@ -222,9 +242,13 @@ pub fn runProgram(vm: *VirtualMachine, program: AST.Program) !void {
     var index: usize = 0;
     while (index < program.statements.len) : (index += 1) {
         switch (program.statements[index].val) {
-            .print_stmt => |maybe_name| {
-                if (vm.runtime.associated_names.get(maybe_name.val)) |name| {
-                    try tryPrint(vm, name.port.?);
+            .print_stmt => |name_to_print| {
+                if (vm.runtime.associated_names.get(name_to_print.val)) |maybe_name| {
+                    if (maybe_name) |name| {
+                        try tryPrint(vm, name.port.?);
+                    } else {
+                        std.debug.print("<EMPTY>\n", .{});
+                    }
                 } else {
                     std.debug.print("<UNDEFINED>\n", .{});
                 }

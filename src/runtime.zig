@@ -38,7 +38,7 @@ pub const IdCountingHashMap = struct {
 
 agent_id_map: IdCountingHashMap,
 agent_arities: std.AutoHashMap(Agent.Id, Agent.Arity),
-associated_names: std.StringHashMap(*Name),
+associated_names: std.StringHashMap(?*Name),
 io: std.Io,
 threaded: *std.Io.Threaded,
 arena: *std.heap.ArenaAllocator,
@@ -60,7 +60,7 @@ pub fn init(gpa: std.mem.Allocator) !Self {
         .arena = arena,
         .allocator = allocator,
         .agent_id_map = .{ .map = std.StringHashMap(u32).init(allocator) },
-        .associated_names = std.StringHashMap(*Name).init(allocator),
+        .associated_names = std.StringHashMap(?*Name).init(allocator),
         .equation_queue = std.Io.Queue(Equation).init(&.{}),
         .equation_deque = try std.Deque(Equation).initCapacity(allocator, 10),
         .agent_arities = std.AutoHashMap(Agent.Id, Agent.Arity).init(allocator),
