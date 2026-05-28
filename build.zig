@@ -5,8 +5,6 @@ pub const DebugPrintConfig = struct {
     print_interactions: bool = false,
 };
 
-pub const debug_print_config: DebugPrintConfig = .{};
-
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -57,6 +55,7 @@ pub fn build(b: *std.Build) void {
     options.addOption(DebugPrintConfig, "debug_printing", debug_printing);
 
     mod.addOptions("config", options);
+    vm_mod.addOptions("config", options);
 
     b.installArtifact(exe);
 

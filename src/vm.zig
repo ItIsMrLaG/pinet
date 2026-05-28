@@ -5,7 +5,7 @@ const Types = @import("types.zig");
 const Runtime = @import("runtime.zig");
 const Instruction = @import("instruction.zig");
 
-const Config = @import("root.zig").Config;
+const Config = @import("config");
 
 const Agent = Types.Agent;
 const Value = Types.Value;
