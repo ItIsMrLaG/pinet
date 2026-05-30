@@ -26,12 +26,13 @@ Pinet is in early development.
 ### TODO
 
 - args parsing
-- golden tests
+- golden tests using zig build system
 - optional debug printing
-- integer support
-- rules for any (Agent() >< a)
+- error handling on all stages
+- number support
+- rules for wildcart agents (`Agent() >< any => ...;`)
 - lists support
-- builtins (dups, erasers)
+- builtins (dups, erasers) using static virtual tables
 - multithreading
 
 # Acknowledgement & Lineage

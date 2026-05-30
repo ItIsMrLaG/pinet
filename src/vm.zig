@@ -59,9 +59,9 @@ pub fn Heap(T: type) type {
         }
 
         pub fn freeOne(elem: *T) void {
-            // It is quite interesting if this can actually work
-            // because it shouldn't normally
-            std.debug.print("Free is called\n", .{});
+            if (Config.debug_printing.print_frees) {
+                std.debug.print("Free is called\n", .{});
+            }
             const real_elem = @as(*Optional, @fieldParentPtr("item", elem));
             real_elem.* = .free;
         }
@@ -74,7 +74,8 @@ pub fn Heap(T: type) type {
                 }
             }
             const free = self.items.len - used;
-            std.debug.print("Heap({s}): {} used, {} free, size of Optional is {}, while the size of element is {}\n", .{ @typeName(T), used, free, @sizeOf(Optional), @sizeOf(T) });
+            std.debug.print("Heap({s}): {} used, {} free, sizeOf(Optional) = {}, sizeOf(T) = {}\n",
+                .{ @typeName(T), used, free, @sizeOf(Optional), @sizeOf(T) });
         }
     };
 }

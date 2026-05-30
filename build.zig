@@ -4,6 +4,7 @@ pub const DebugPrintConfig = struct {
     print_compiled_instructions: bool = false,
     print_interactions: bool = false,
     print_memory_usage: bool = false,
+    print_frees: bool = false,
 };
 
 pub fn build(b: *std.Build) void {
@@ -51,6 +52,7 @@ pub fn build(b: *std.Build) void {
         .print_compiled_instructions = b.option(bool, "print-compiled-instructions", "print compiled instructions") orelse false,
         .print_interactions = b.option(bool, "print-interactions", "print interaction points when they happen") orelse false,
         .print_memory_usage = b.option(bool, "print-memory-usage", "print memory usage after top-level interactions") orelse false,
+        .print_frees = b.option(bool, "print-frees", "print message when a agent/name free happens") orelse false,
     };
 
     const options = b.addOptions();
