@@ -7,23 +7,24 @@ const pinet = @import("pinet");
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const args = init.minimal.args.vector;
-    const filepath: []const u8 = if (args.len < 2) "./tests/numbers.in" else if_stmt: {
-        const data: [*:0]const u8 = args[1];
-        const len: usize = loop: for (0..128) |idx| {
-            if (data[idx] == 0) break :loop idx;
-        } else unreachable;
-        break :if_stmt data[0..len];
-    };
+    const filepath: []const u8 = if (args.len < 2) "./tests/numbers.in" else std.mem.span(args[1]);
     var sthreaded = Io.Threaded.init_single_threaded;
     defer sthreaded.deinit();
     const io = sthreaded.io();
 
-    const buffer: []u8 = try gpa.alloc(u8, 1024);
-    defer gpa.free(buffer);
-    @memset(buffer, 0);
-    const contents = try Io.Dir.readFile(Io.Dir.cwd(), io, filepath, buffer);
+    const max_file_bytes = 10 * 1024 * 1024;
+    const contents = try Io.Dir.readFileAllocOptions(
+        Io.Dir.cwd(),
+        io,
+        filepath,
+        gpa,
+        .limited(max_file_bytes),
+        .of(u8),
+        0,
+    );
+    defer gpa.free(contents);
 
-    const tokens = try pinet.Lexer.tokenize(gpa, @ptrCast(contents));
+    const tokens = try pinet.Lexer.tokenize(gpa, contents);
     defer gpa.free(tokens);
     var parser = try pinet.Parser.Parser.init(tokens, gpa);
     defer parser.deinit(gpa);

@@ -1,8 +1,8 @@
 const std = @import("std");
-const AST = @import("parser.zig");
+const AST = @import("../parser.zig");
 const Types = @import("types.zig");
 const Runtime = @import("runtime.zig");
-const VM = @import("vm.zig");
+const VM = @import("../vm.zig");
 
 const Agent = Types.Agent;
 const Special = Types.Special;
@@ -86,7 +86,7 @@ pub fn debugPrintInstruction(vm: *const VM, instrs: []Instruction) !void {
     for (instrs) |instr| {
         defer std.debug.print("\n\n", .{});
         std.debug.print("REG{} ", .{instr.operand1});
-        if (instr.tag == .Push or instr.tag == .PutArgumentPort) {
+        if (instr.tag == .Push or instr.tag == .PutIntoPort) {
             std.debug.print("TO REG{}", .{instr.operand2});
         }
         std.debug.print(": ", .{});
@@ -106,6 +106,9 @@ pub fn debugPrintInstruction(vm: *const VM, instrs: []Instruction) !void {
             },
             .PutIntoPort => |port| {
                 std.debug.print("PUT INTO {} PORT", .{port});
+            },
+            .MkSpecial => |special| {
+                std.debug.print("MKSPECIAL {any}", .{special});
             },
         }
     }

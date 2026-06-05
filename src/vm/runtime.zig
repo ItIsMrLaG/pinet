@@ -5,7 +5,7 @@ const Builtin = @import("builtin.zig");
 // Runtime module
 // for anything shared in the vm
 
-const Config = @import("vm.zig").Config;
+const Config = @import("../vm.zig").Config;
 
 const Self = @This();
 

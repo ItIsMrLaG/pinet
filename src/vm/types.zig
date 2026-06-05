@@ -1,5 +1,5 @@
 const std = @import("std");
-const Heap = @import("vm.zig").Heap;
+const Heap = @import("../vm.zig").Heap;
 
 const number_of_ports = 10;
 
@@ -30,7 +30,7 @@ pub const Name = struct {
     }
 
     pub fn is_open(name: *Name) bool {
-        return if (name.port) |_| true else false;
+        return if (name.port) |_| false else true;
     }
 };
 
@@ -151,25 +151,4 @@ pub const Value = union(enum) {
 pub const Equation = struct {
     lhs: Value,
     rhs: Value,
-};
-
-pub const BufferedStringStream = struct {
-    buffer: []u8,
-    offset: usize,
-    print_buf: []u8,
-
-    pub fn init(gpa: std.mem.Allocator, size: usize) !BufferedStringStream {
-        const buffer = try gpa.alloc(u8, size);
-        @memset(buffer, 0);
-        return .{
-            .buffer = buffer,
-            .offset = 0,
-            .print_buf = buffer,
-        };
-    }
-    pub fn write(self: *BufferedStringStream, comptime fmt: []const u8, args: anytype) !void {
-        const written = try std.fmt.bufPrint(self.print_buf, fmt, args);
-        self.offset += written.len;
-        self.print_buf = self.buffer[self.offset..];
-    }
 };

@@ -6,7 +6,7 @@ Add(r, x) >< Z() =>
     r ~ x;
 
 Mul(r, x) >< S(y) =>
-    Dup2(x1,x2) ~ x,
+    Dup(x1, x2) ~ x,
     Mul(w, x1) ~ y,
     Add(r, w) ~ x2;
 

@@ -1,6 +1,7 @@
 const std = @import("std");
-const VM = @import("vm.zig");
+const VM = @import("../vm.zig");
 const Types = @import("types.zig");
+const Printing = @import("printing.zig");
 
 const Agent = Types.Agent;
 const Value = Types.Value;
@@ -53,7 +54,7 @@ pub fn deinit() void {
     BuiltinTable.deinit();
 }
 
-pub const number_builtin_ident = @import("parser.zig").number_special_ident;
+pub const number_builtin_ident = @import("../parser.zig").number_special_ident;
 
 // Making this empty makes there be no
 // builtin agents. TODO: use compile flag for that
@@ -108,7 +109,7 @@ pub fn eraser(vm: *VM, self: *Agent, ag: *Agent) BuiltinAgentError!void {
 
     if (VM.Config.debug_printing.print_interactions) {
         std.debug.print("Freeing ", .{});
-        try vm.tryPrint(Value{ .agent = ag });
+        try Printing.tryPrint(vm, Value{ .agent = ag });
     }
     // Anonymous function
     const erase = struct {
@@ -193,8 +194,6 @@ pub fn dupCopy(vm: *VM, self: *Agent, ag: *Agent) BuiltinAgentError!void {
                         if (connected_name.port) |connected_thing| {
                             // If the name has a port then we skip the original name and
                             // go straight to its port
-                            // Based on 02.06.2026 debugging session
-                            // This could be bad. Check first if something breaks.
                             defer VM.Heap(Name).freeOne(connected_name);
                             continue :port_switch connected_thing;
                         } else {

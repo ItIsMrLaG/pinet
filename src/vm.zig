@@ -1,11 +1,14 @@
 const std = @import("std");
 const AST = @import("parser.zig");
 const Lexer = @import("lexer.zig");
-const Types = @import("types.zig");
-const Runtime = @import("runtime.zig");
-const Instruction = @import("instruction.zig");
-const Interaction = @import("interactions.zig");
-const Builtin = @import("builtin.zig");
+const Types = @import("vm/types.zig");
+const Runtime = @import("vm/runtime.zig");
+const Instruction = @import("vm/instruction.zig");
+const Interaction = @import("vm/interactions.zig");
+const Builtin = @import("vm/builtin.zig");
+const Printing = @import("vm/printing.zig");
+const memory = @import("vm/memory.zig");
+pub const Heap = memory.Heap;
 
 pub const Config = @import("config");
 
@@ -25,72 +28,6 @@ registers: [number_of_registers]Value,
 
 runtime: *Runtime,
 gpa: std.mem.Allocator,
-
-pub fn Heap(T: type) type {
-    return struct {
-        const Optional = union(enum) {
-            free: void,
-            item: T,
-        };
-        items: []Optional,
-        free_idx: usize,
-        capacity: usize,
-
-        pub fn init(gpa: std.mem.Allocator, capacity: usize) !Heap(T) {
-            const items = try gpa.alloc(Optional, capacity);
-            @memset(items, .free);
-            return .{
-                .items = items,
-                .capacity = capacity,
-                .free_idx = 0,
-            };
-        }
-
-        pub fn deinit(self: *Heap(T), gpa: std.mem.Allocator) void {
-            gpa.free(self.items);
-        }
-
-        pub fn getOne(self: *Heap(T)) !*T {
-            if (self.free_idx < self.capacity) {
-                defer self.free_idx += 1;
-                self.items[self.free_idx] = .{ .item = undefined };
-                return &self.items[self.free_idx].item;
-            } else {
-                return error.OutOfMemory;
-            }
-        }
-
-        pub fn freeOne(elem: *T) void {
-            if (Config.debug_printing.print_frees) {
-                std.debug.print("Free is called\n", .{});
-            }
-            const real_elem = @as(*Optional, @fieldParentPtr("item", elem));
-            if (!Config.debug_printing.print_frees) {
-                real_elem.* = .free;
-            } else {
-                switch (real_elem.*) {
-                    .free => {
-                        std.debug.print("Double-free\n", .{});
-                    },
-                    .item => {
-                        //real_elem.* = .free;
-                    },
-                }
-            }
-        }
-
-        pub fn printUsage(self: *const Heap(T)) void {
-            var used: usize = 0;
-            for (self.items) |maybe_elem| {
-                if (maybe_elem == .item) {
-                    used += 1;
-                }
-            }
-            const free = self.items.len - used;
-            std.debug.print("Heap({s}): {} used, {} free, sizeOf(Optional) = {}, sizeOf(T) = {}\n", .{ @typeName(T), used, free, @sizeOf(Optional), @sizeOf(T) });
-        }
-    };
-}
 
 pub fn createAgent(vm: *VirtualMachine, id: Agent.Id) !*Agent {
     const ag = try vm.agent_heap.getOne();
@@ -123,127 +60,6 @@ pub fn deinit(self: *Self) void {
     self.agent_heap.deinit(self.gpa);
 }
 
-pub fn getAgentSymbolNested(vm: *const VirtualMachine, ag: *const Agent, stream: *Types.BufferedStringStream) !void {
-    const name = vm.runtime.agent_id_map.findKey(ag.id);
-    try stream.write("{s}(", .{name.?});
-    {
-        var idx: usize = 0;
-        outer: while (ag.ports[idx]) |port| : (idx += 1) {
-            if (idx != 0) {
-                try stream.write(", ", .{});
-            }
-            switch (port) {
-                .name => |_wire| {
-                    var wire = _wire;
-                    var cnt: u32 = 0;
-                    while (wire.port) |wired_to| {
-                        if (Config.debug_printing.print_interactions) {
-                            try stream.write("(n)", .{});
-                        }
-                        if (wired_to == .agent) {
-                            try getAgentSymbolNested(vm, wired_to.agent, stream);
-                            continue :outer;
-                        } else {
-                            wire = wired_to.name;
-                        }
-                        cnt = cnt + 1;
-                        if (cnt > 20) {
-                            break;
-                        }
-                    }
-                    try stream.write("<NAME>", .{});
-                },
-                .agent => |new_ag| {
-                    try getAgentSymbolNested(vm, new_ag, stream);
-                },
-                .special => |special| {
-                    switch (special) {
-                        .float => |float| {
-                            try stream.write("{}", .{float});
-                        },
-                        .integer => |integer| {
-                            try stream.write("{}", .{integer});
-                        },
-                    }
-                },
-            }
-        }
-    }
-    try stream.write(")", .{});
-}
-
-pub fn getAgentSymbol(vm: *const VirtualMachine, ag: *const Agent) ![]const u8 {
-    const name = vm.runtime.agent_id_map.findKey(ag.id);
-    const max_agent_name_size = 512;
-    var stream = try Types.BufferedStringStream.init(vm.gpa, max_agent_name_size);
-    try stream.write("{s}(", .{name.?});
-    {
-        var idx: usize = 0;
-        outer: while (ag.ports[idx]) |port| : (idx += 1) {
-            if (idx != 0) {
-                try stream.write(", ", .{});
-            }
-            switch (port) {
-                .name => |_wire| {
-                    var wire = _wire;
-                    var cnt: u32 = 0;
-                    while (wire.port) |wired_to| {
-                        if (Config.debug_printing.print_interactions) {
-                            try stream.write("(n)", .{});
-                        }
-                        if (wired_to == .agent) {
-                            try getAgentSymbolNested(vm, wired_to.agent, &stream);
-                            continue :outer;
-                        } else {
-                            wire = wired_to.name;
-                        }
-                        cnt = cnt + 1;
-                        if (cnt > 20) {
-                            break;
-                        }
-                    }
-                    try stream.write("<NAME>", .{});
-                },
-                .agent => |new_ag| {
-                    try getAgentSymbolNested(vm, new_ag, &stream);
-                },
-                .special => |special| {
-                    switch (special) {
-                        .float => |float| {
-                            try stream.write("{}", .{float});
-                        },
-                        .integer => |integer| {
-                            try stream.write("{}", .{integer});
-                        },
-                    }
-                },
-            }
-        }
-    }
-    try stream.write(")", .{});
-    return stream.buffer;
-}
-
-pub fn tryPrint(vm: *const VirtualMachine, val: Value) !void {
-    var cur = val;
-    var idx: u32 = 0;
-    while (cur == .name) : ({
-        cur = cur.name.port.?;
-        idx += 1;
-    }) {
-        if (Config.debug_printing.print_interactions) {
-            std.debug.print("(n)", .{});
-        }
-        if (idx > 10) {
-            std.debug.print("{any} is cyclic\n", .{val.name.*});
-            return;
-        }
-    }
-    const bytes = try getAgentSymbol(vm, cur.agent);
-    defer vm.gpa.free(bytes);
-    std.debug.print("{s}\n", .{bytes});
-}
-
 pub fn getNumberType(str: []const u8) !Types.Special {
     const contains = struct {
         pub fn contains(s: []const u8, selected: u8) bool {
@@ -266,7 +82,7 @@ pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
         // is number
         const num = obj.portlist.?[0].val;
         const numtype = try getNumberType(num.name);
-        const agent_id = Builtin.BuiltinNameMap.get("#number").?;
+        const agent_id = Builtin.BuiltinNameMap.get(Builtin.number_builtin_ident).?;
         var agent = try vm.createAgent(agent_id);
         agent.ports[0] = Value{
             .special = numtype,
@@ -374,7 +190,7 @@ pub fn runProgram(vm: *VirtualMachine, program: AST.Program) !void {
                 if (vm.runtime.associated_names.get(name_to_print.val)) |maybe_name| {
                     if (maybe_name) |name| {
                         if (name.port) |port| {
-                            try tryPrint(vm, port);
+                            try Printing.tryPrint(vm, port);
                         } else {
                             std.debug.print("<MOVED>\n", .{});
                         }
