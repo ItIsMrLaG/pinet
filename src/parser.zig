@@ -51,12 +51,20 @@ pub const Expression = union(enum) {
             eq,
             logic_or,
             logic_and,
+            less,
+            leq,
+            greater,
+            geq,
 
             pub fn symbol(self: Tag) []const u8 {
                 return switch (self) {
                     .eq => "==",
                     .logic_or => "||",
                     .logic_and => "&&",
+                    .less => "<",
+                    .leq => "<=",
+                    .greater => ">",
+                    .geq => ">=",
                 };
             }
         };
@@ -179,6 +187,7 @@ pub const Parser = struct {
             .logic_or => .{ 10, 11 },
             .logic_and => .{ 20, 21 },
             .eq => .{ 30, 31 },
+            .greater, .geq, .less, .leq => .{ 40, 41 },
             else => {
                 self.err = .{
                     .pos = self.index,
@@ -211,6 +220,10 @@ pub const Parser = struct {
                 .eq => .eq,
                 .logic_and => .logic_and,
                 .logic_or => .logic_or,
+                .greater => .greater,
+                .geq => .geq,
+                .less => .less,
+                .leq => .leq,
                 else => {
                     self.err = .{
                         .pos = self.index,
@@ -414,7 +427,7 @@ pub const Parser = struct {
 
     fn parsePairs(self: *Parser) ![]Node(ActivePair) {
         var list = std.ArrayList(Node(ActivePair)).empty;
-        if (self.peek().tag == .semicolon) {
+        if (self.peek().tag == .semicolon or self.peek().tag == .pipe) {
             return list.items;
         }
 
@@ -458,6 +471,21 @@ pub const Parser = struct {
                     .pairs = try self.parsePairs(),
                 };
                 try lst.append(self.allocator, rule_expr);
+            },
+            .pipe => {
+                while (self.peek().tag == .pipe) {
+                    _ = self.advance();
+                    const expr = if (self.peek().tag == .keyword_otherwise) blk: {
+                        _ = self.advance();
+                        break :blk null;
+                    } else try self.parseExpression(0);
+                    try self.expectTag(.fatrightarrow, self.advance().tag);
+                    const rule_expr: RuleExpression = .{
+                        .expr = expr,
+                        .pairs = try self.parsePairs(),
+                    };
+                    try lst.append(self.allocator, rule_expr);
+                }
             },
             else => {
                 self.err = .{
@@ -650,16 +678,16 @@ fn writeObject(stream: *BufferedStringStream, obj: Object) !void {
     }
 }
 
-fn to_SExpression_nested(expr: Expression, stream: *BufferedStringStream) !void {
+fn toS_Expression_nested(expr: Expression, stream: *BufferedStringStream) !void {
     switch (expr) {
         .atom => |obj| {
             try writeObject(stream, obj.val);
         },
         .binary_op => |binary_op| {
             try stream.write("({s} ", .{binary_op.tag.symbol()});
-            try to_SExpression_nested(binary_op.lhs.val, stream);
+            try toS_Expression_nested(binary_op.lhs.val, stream);
             try stream.write(" ", .{});
-            try to_SExpression_nested(binary_op.rhs.val, stream);
+            try toS_Expression_nested(binary_op.rhs.val, stream);
             try stream.write(")", .{});
         },
         .unary_op => {},
@@ -667,10 +695,10 @@ fn to_SExpression_nested(expr: Expression, stream: *BufferedStringStream) !void 
 }
 
 // Returns a buffer that is bigger than the actual data
-fn to_SExpression(gpa: std.mem.Allocator, expr: Expression) ![:0]const u8 {
+fn toS_Expression(gpa: std.mem.Allocator, expr: Expression) ![:0]const u8 {
     const max_buffer_size = 512;
     var stream = try BufferedStringStream.init(gpa, max_buffer_size);
-    try to_SExpression_nested(expr, &stream);
+    try toS_Expression_nested(expr, &stream);
 
     defer gpa.free(stream.buffer);
     return try gpa.dupeSentinel(u8, stream.buffer[0..stream.offset], 0);
@@ -693,7 +721,7 @@ test "hand-written expr to s-expr" {
         .tag = .eq,
     } };
 
-    const actual = try to_SExpression(gpa, expr);
+    const actual = try toS_Expression(gpa, expr);
     defer gpa.free(actual);
     const expected = "(== a b)";
     try std.testing.expectEqualSentinel(u8, 0, expected, actual);
@@ -717,7 +745,44 @@ test "parsing an expression" {
         return err;
     };
 
-    const sexpr = try to_SExpression(gpa, expr.val);
+    const sexpr = try toS_Expression(gpa, expr.val);
     defer gpa.free(sexpr);
     try std.testing.expectEqualSentinel(u8, 0, "(|| a (&& (== b c) d))", sexpr);
+}
+
+test "rule with conditionals" {
+    var dalloc = std.heap.DebugAllocator(.{}).init;
+    defer dalloc.deinitWithoutLeakChecks();
+    var arena = std.heap.ArenaAllocator.init(dalloc.allocator());
+    defer arena.deinit();
+    const alloc = arena.allocator();
+    const program =
+        \\ Fib(r) >< n
+        \\    | n == 0 => r ~ 0
+        \\    | n == 1 => r ~ 1
+        \\    | otherwise =>
+        \\       Dup(n1, n2) ~ n,
+        \\       Sub(n', 1) ~ n1,
+        \\       Sub(n'', 2) ~ n2,
+        \\       Fib(w) ~ n1,
+        \\       Fib(w') ~ n2,
+        \\       Add(r, w) ~ w';
+    ;
+    const tokens = try Lexer.tokenize(alloc, program);
+
+    var parser = try Parser.init(tokens, alloc);
+    defer parser.deinit(alloc);
+
+    const stmt = parser.parseStmt();
+    if (parser.err) |err| {
+        std.debug.print("{s}\n", .{try err.messageLine(alloc, &parser)});
+    }
+
+    switch ((try stmt).?.val) {
+        .rule => |rule| {
+            try std.testing.expectEqualSentinel(u8, 0, "(== n #number(0))", try toS_Expression(alloc, rule.rule_exprs[0].expr.?.val));
+            try std.testing.expectEqualStrings("r", rule.rule_exprs[1].pairs[0].val.lhs.val.name);
+        },
+        else => unreachable,
+    }
 }
