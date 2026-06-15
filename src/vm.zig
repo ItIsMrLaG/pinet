@@ -51,7 +51,7 @@ pub fn pushUrgent(vm: *VirtualMachine, eq: Equation) !void {
 }
 
 pub fn init(gpa: std.mem.Allocator, runtime: *Runtime) !Self {
-    const default_heap_size = 1024;
+    const default_heap_size = 1024 * 1024 * 4;
     return .{
         .runtime = runtime,
         .agent_heap = try Heap(Agent).init(gpa, default_heap_size),

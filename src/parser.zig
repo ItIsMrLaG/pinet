@@ -202,39 +202,46 @@ fn parseConsList(self: *Parser) error{ NoSpaceLeft, OutOfMemory, ErrorDuringPars
         },
     };
     defer ret.tslice.end = @intCast(self.index - 1);
-    switch (tentry.tag) {
-        .identifier, .numeric_literal, .lparen => {
-            ret.val.name = AST.cons_list_ident;
-            ret.val.portlist = try self.allocator.alloc(AST.Node(AST.Object), 2);
-            ret.val.portlist.?[0] = try self.parseObject();
-            if (self.peek().tag == .comma) {
-                _ = self.advance();
-            } else if (self.peek().tag != .rbracket) {
-                self.err = .{
-                    .pos = self.index,
-                    .tag = .{
-                        .ExpectedObject = .{ .found = tentry.tag },
-                    },
-                };
-                return Error.ErrorDuringParsing;
-            }
-            ret.val.portlist.?[1] = try self.parseConsList();
-        },
-        .rbracket => {
-            _ = self.advance();
-            ret.val.name = AST.nil_list_ident;
-            ret.val.portlist = try self.allocator.alloc(AST.Node(AST.Object), 0);
-        },
-        else => {
-            self.err = .{
-                .pos = self.index,
-                .tag = .{
-                    .ExpectedObject = .{ .found = tentry.tag },
-                },
-            };
-            return Error.ErrorDuringParsing;
-        },
+    if (tentry.tag == .rbracket) {
+        ret.val.name = AST.nil_list_ident;
+        ret.val.portlist = try self.allocator.alloc(AST.Node(AST.Object), 0);
+        _ = self.advance();
+        return ret;
     }
+    ret.val = .{
+        .name = AST.cons_list_ident,
+        .portlist = try self.allocator.alloc(AST.Node(AST.Object), 2),
+    };
+    ret.val.portlist.?[0] = try self.parseObject();
+    var node = ret;
+    while (self.peek().tag == .comma) {
+        _ = self.advance();
+        var new_node: AST.Node(AST.Object) = .{
+            .val = AST.Object{
+                .name = AST.cons_list_ident,
+                .portlist = try self.allocator.alloc(AST.Node(AST.Object), 2),
+            },
+            .tslice = .{
+                .start = @intCast(self.index),
+                .end = undefined,
+            },
+        };
+        new_node.val.portlist.?[0] = try self.parseObject();
+        new_node.tslice.end = @intCast(self.index);
+        node.val.portlist.?[1] = new_node;
+        node = new_node;
+    }
+    try self.expectTag(.rbracket, self.advance().tag);
+    node.val.portlist.?[1] = AST.Node(AST.Object){
+        .val = .{
+            .name = AST.nil_list_ident,
+            .portlist = try self.allocator.alloc(AST.Node(AST.Object), 0),
+        },
+        .tslice = .{
+            .start = @intCast(self.index),
+            .end = @intCast(self.index),
+        },
+    };
     return ret;
 }
 
@@ -293,7 +300,7 @@ fn parseObject(self: *Parser) !AST.Node(AST.Object) {
 
     if (list) {
         _ = self.advance();
-        return parseConsList(self);
+        return self.parseConsList();
     }
 
     switch (self.peek().tag) {
