@@ -24,6 +24,10 @@ pub const Name = struct {
 pub const Object = struct {
     name: []const u8,
     portlist: ?[]Node(Object),
+
+    pub fn isNumber(self: *const Object) bool {
+        return self.name[0] == '#';
+    }
 };
 
 pub const ActivePair = struct {

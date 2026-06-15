@@ -6,7 +6,7 @@ const number_of_ports = 10;
 pub const Ports = [number_of_ports]?Value;
 
 pub const Agent = struct {
-    id: Agent.Id,
+    id: Id,
     ports: Ports,
     pub const Id = u32;
     pub const Arity = u8;
@@ -120,6 +120,7 @@ pub const Special = union(enum) {
         }
     }
 };
+
 pub const Value = union(enum) {
     name: *Name,
     agent: *Agent,

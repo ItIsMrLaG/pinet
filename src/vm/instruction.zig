@@ -232,7 +232,7 @@ pub fn compileAgent(runtime: *Runtime, ag: AST.Object, scope: *Scope) !CompiledT
     for (0..arity) |idx| {
         const port = ag.portlist.?[idx].val;
         if (port.portlist) |_| {
-            if (port.name[0] == '#') {
+            if (port.isNumber()) {
                 // number
                 const compiledNumber = try compileNumber(runtime, port, scope);
                 try list.appendSlice(runtime.allocator, compiledNumber.instrs);
@@ -264,7 +264,7 @@ pub fn compileAgent(runtime: *Runtime, ag: AST.Object, scope: *Scope) !CompiledT
 
 pub fn compileTerm(runtime: *Runtime, obj: AST.Object, scope: *Scope) !CompiledTerm {
     if (obj.portlist) |_| {
-        if (obj.name[0] == '#') {
+        if (obj.isNumber()) {
             return try compileNumber(runtime, obj, scope);
         } else {
             return try compileAgent(runtime, obj, scope);
@@ -331,7 +331,7 @@ pub fn compileCondition(runtime: *Runtime, port_info: *const std.StringHashMap(P
         .atom => |atom_node| {
             const atom = atom_node.val;
             if (atom.portlist) |ports| {
-                if (atom.name[0] == '#') {
+                if (atom.isNumber()) {
                     const num = ports[0].val.name;
                     compiled.* = .{ .atom = .{ .special = try VM.getNumberType(num) } };
                 }

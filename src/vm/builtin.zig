@@ -303,7 +303,7 @@ pub fn number(vm: *VM, self: *Agent, other: *Agent) BuiltinAgentError!void {
                 .agent => |ag| {
                     defer VM.Heap(Agent).freeOne(ag);
                     // port zero because it is assumed to be
-                    // #number agent
+                    // number agent
                     continue :port_blk ag.ports[0] orelse return err;
                 },
                 .special => |special| {

@@ -84,8 +84,7 @@ pub fn getNumberType(str: []const u8) !Types.Special {
 }
 
 pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
-    if (obj.name[0] == '#') {
-        // is number
+    if (obj.isNumber()) {
         const num = obj.portlist.?[0].val;
         const numtype = try getNumberType(num.name);
         const agent_id = Builtin.BuiltinNameMap.get(Builtin.number_builtin_ident).?;
