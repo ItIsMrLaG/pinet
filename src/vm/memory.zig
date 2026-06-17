@@ -27,13 +27,25 @@ pub fn Heap(comptime T: type) type {
         }
 
         pub fn getOne(self: *Heap(T)) !*T {
-            if (self.free_idx < self.capacity) {
-                defer self.free_idx += 1;
-                self.items[self.free_idx] = .{ .item = undefined };
-                return &self.items[self.free_idx].item;
-            } else {
-                return error.OutOfMemory;
+            for (self.free_idx..self.capacity) |idx| {
+                if (self.items[idx] == .free) {
+                    self.free_idx = idx;
+
+                    self.items[idx] = .{ .item = undefined };
+
+                    return &self.items[idx].item;
+                }
             }
+            for (0..self.free_idx) |idx| {
+                if (self.items[idx] == .free) {
+                    self.free_idx = idx;
+
+                    self.items[idx] = .{ .item = undefined };
+
+                    return &self.items[idx].item;
+                }
+            }
+            return error.OutOfMemory;
         }
 
         pub fn freeOne(elem: *T) void {

@@ -233,7 +233,17 @@ pub fn runProgram(vm: *VirtualMachine, program: AST.Program) !void {
                 const rhs = try createObject(vm, ap.rhs.val);
                 const eq = Equation{ .lhs = lhs, .rhs = rhs };
                 try vm.runtime.equation_deque.pushBack(vm.runtime.allocator, eq);
-                try runEquations(vm);
+
+                if (Config.debug_printing.benchmark) {
+                    const start = std.Io.Clock.awake.now(vm.runtime.io);
+                    try runEquations(vm);
+                    const end = std.Io.Clock.awake.now(vm.runtime.io);
+
+                    const duration = start.durationTo(end);
+                    std.debug.print("Time passed: {}s\n", .{@as(f64, @floatFromInt(duration.toMilliseconds())) / 1000.0});
+                } else {
+                    try runEquations(vm);
+                }
 
                 if (Config.debug_printing.print_memory_usage) {
                     vm.agent_heap.printUsage();
