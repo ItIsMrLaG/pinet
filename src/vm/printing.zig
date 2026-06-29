@@ -34,6 +34,58 @@ pub const BufferedStringStream = struct {
     }
 };
 
+/// Handles construction of a list of lines.
+/// Useful for printing errors.
+/// The last line is between the last '\n' (if present) and eof.
+pub const Lines = struct {
+    lines: [][]const u8,
+    gpa: std.mem.Allocator,
+
+    pub fn init(gpa: std.mem.Allocator, contents: [:0]const u8) !Lines {
+        var list = std.ArrayList([]const u8).empty;
+        var st: usize = 0;
+        var idx: usize = 0;
+        while (true) : (idx += 1) {
+            const c = contents[idx];
+            if (c == '\n' or c == 0) {
+                try list.append(gpa, contents[st..idx]);
+                st = idx + 1;
+                if (c == 0) break;
+            }
+        }
+        return .{
+            .lines = try list.toOwnedSlice(gpa),
+            .gpa = gpa,
+        };
+    }
+
+    pub fn deinit(self: *Lines) void {
+        self.gpa.free(self.lines);
+    }
+
+    test "single line" {
+        const gpa = std.testing.allocator;
+        const file = "hello world";
+
+        var lines = try Lines.init(gpa, file);
+        defer lines.deinit();
+
+        try std.testing.expectEqualStrings("hello world", lines.lines[0]);
+    }
+
+    test "multiple lines" {
+        const gpa = std.testing.allocator;
+        const file = "hello\nworld\n";
+
+        var lines = try Lines.init(gpa, file);
+        defer lines.deinit();
+
+        try std.testing.expectEqualStrings("hello", lines.lines[0]);
+        try std.testing.expectEqualStrings("world", lines.lines[1]);
+        try std.testing.expectEqualStrings("", lines.lines[2]);
+    }
+};
+
 const max_cycle_length = 100;
 
 fn getAgentSymbolNested(vm: *const VM, ag: *const Agent, stream: *BufferedStringStream) !void {
@@ -120,4 +172,10 @@ pub fn tryPrint(vm: *const VM, val: Value) !void {
     var stdout = std.Io.File.stdout();
     var writer = stdout.writerStreaming(vm.runtime.io, &.{});
     try writer.interface.print("{s}\n", .{bytes});
+}
+
+test {
+    _ = .{
+        Lines,
+    };
 }

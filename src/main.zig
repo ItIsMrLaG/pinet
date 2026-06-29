@@ -62,8 +62,11 @@ pub fn main(init: std.process.Init) !void {
     defer parser.deinit(gpa);
     const program = parser.parseProgram() catch |err| {
         if (err == error.ErrorDuringParsing) {
+            const prettyLines = try parser.err.?.getPrettyLine(&parser, contents);
             const messageLine = try parser.err.?.messageLine(&parser);
-            std.debug.print("{s}\n", .{messageLine});
+            std.debug.print("{s}\n\n{s}\n{s}\n", .{ messageLine, prettyLines[0], prettyLines[1] });
+            // this error is handled
+            return;
         }
         return err;
     };
