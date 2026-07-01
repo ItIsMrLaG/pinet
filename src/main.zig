@@ -57,6 +57,13 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(contents);
 
     const tokens = try pinet.Lexer.tokenize(gpa, contents);
+
+    const main_file = pinet.Runtime.File{
+        .path = filepath,
+        .contents = contents,
+        .tokens = tokens,
+    };
+
     defer gpa.free(tokens);
     var parser = try pinet.Parser.init(tokens, gpa, std.heap.page_allocator);
     defer parser.deinit(gpa);
@@ -70,7 +77,7 @@ pub fn main(init: std.process.Init) !void {
         }
         return err;
     };
-    var runtime = try pinet.Runtime.init(gpa, std.heap.page_allocator, filepath);
+    var runtime = try pinet.Runtime.init(gpa, std.heap.page_allocator, main_file);
     defer runtime.deinit(gpa);
     var vm = try pinet.VM.init(gpa, &runtime);
     defer vm.deinit();

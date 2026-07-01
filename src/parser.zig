@@ -10,25 +10,27 @@ pub const Parser = @This();
 
 const Printing = @import("vm/printing.zig");
 
+/// Basically a diagnostic tool. Has context of the error in case
+/// Error.ErrorDuringParsing is returned.
 pub const ParserError = struct {
     token: Token,
     tag: Tag,
 
     const Tag = union(enum) {
-        UnexpectedEof: void,
-        ExpectedObject: void,
-        ExpectedStatement: void,
-        ExpectedExpression: void,
-        UnexpectedToken: struct { expected: Token.Tag },
+        unexpected_eof: void,
+        expected_object: void,
+        expected_statement: void,
+        expected_expression: void,
+        unexpected_token: struct { expected: Token.Tag },
     };
 
     pub fn message(self: *const ParserError, alloc: std.mem.Allocator) ![]const u8 {
         return switch (self.tag) {
-            .UnexpectedEof => "Unexpected end of file",
-            .ExpectedObject => try std.fmt.allocPrint(alloc, "Expected object, found token: {s}", .{self.token.tag.symbol()}),
-            .ExpectedStatement => try std.fmt.allocPrint(alloc, "Expected statement, found token: {s}", .{self.token.tag.symbol()}),
-            .ExpectedExpression => try std.fmt.allocPrint(alloc, "Expected expression, found token: {s}", .{self.token.tag.symbol()}),
-            .UnexpectedToken => |val| try std.fmt.allocPrint(alloc, "Expected {s}, found {s}", .{ val.expected.symbol(), self.token.tag.symbol() }),
+            .unexpected_eof => "Unexpected end of file",
+            .expected_object => try std.fmt.allocPrint(alloc, "Expected object, found token: {s}", .{self.token.tag.symbol()}),
+            .expected_statement => try std.fmt.allocPrint(alloc, "Expected statement, found token: {s}", .{self.token.tag.symbol()}),
+            .expected_expression => try std.fmt.allocPrint(alloc, "Expected expression, found token: {s}", .{self.token.tag.symbol()}),
+            .unexpected_token => |val| try std.fmt.allocPrint(alloc, "Expected {s}, found {s}", .{ val.expected.symbol(), self.token.tag.symbol() }),
         };
     }
 
@@ -39,18 +41,16 @@ pub const ParserError = struct {
         var lines = try Printing.Lines.init(parser.intermediate_list_allocator, file);
         defer lines.deinit();
 
-        const marker_line = try parser.arena.alloc(u8, token.loc.end.ch - 1);
+        const marker_line = try parser.arena.alloc(u8, token.loc.end.ch);
+        @memset(marker_line, ' ');
 
-        for (0..token.loc.start.ch - 1) |idx| {
-            marker_line[idx] = ' ';
-        }
-        marker_line[token.loc.start.ch - 1] = '^';
-        for (token.loc.start.ch..token.loc.end.ch - 1) |idx| {
+        marker_line[token.loc.start.ch] = '^';
+        for (token.loc.start.ch + 1..token.loc.end.ch) |idx| {
             marker_line[idx] = '~';
         }
 
         return .{
-            lines.lines[line - 1],
+            lines.lines[line],
             marker_line,
         };
     }
@@ -61,7 +61,7 @@ pub const ParserError = struct {
         const msg = try self.message(parser.arena);
         defer parser.arena.free(msg);
 
-        return std.fmt.allocPrint(parser.arena, "Line {} Index {}: {s}", .{ loc.line, loc.ch, msg });
+        return std.fmt.allocPrint(parser.arena, "Syntax error on line {} index {}: {s}", .{ loc.line + 1, loc.ch + 1, msg });
     }
 };
 
@@ -100,7 +100,7 @@ pub fn init(tokens: []const Token, gpa: std.mem.Allocator, page: std.mem.Allocat
 
 fn unexpected_token(self: *Parser, expected: Token.Tag, actual: *const Token) void {
     self.err = .{
-        .tag = .{ .UnexpectedToken = .{ .expected = expected } },
+        .tag = .{ .unexpected_token = .{ .expected = expected } },
         .token = actual.*,
     };
 }
@@ -128,7 +128,7 @@ fn getTokenInfixBP(self: *Parser, token: *const Token) !struct { i32, i32 } {
         else => {
             self.err = .{
                 .token = token.*,
-                .tag = .ExpectedExpression,
+                .tag = .expected_expression,
             };
             return Error.ErrorDuringParsing;
         },
@@ -138,11 +138,11 @@ fn getTokenInfixBP(self: *Parser, token: *const Token) !struct { i32, i32 } {
 fn parseUnary(self: *Parser) !*AST.Node(AST.Expression) {
     const expr = try self.arena.create(AST.Node(AST.Expression));
     expr.tslice.start = @intCast(self.index);
-    defer expr.tslice.end = @intCast(self.index);
     expr.val = switch (self.peek().tag) {
         .exclamation_mark => AST.Expression{ .unary_op = .{ .tag = .not, .item = try self.parseUnary() } },
         else => AST.Expression{ .atom = try self.parseObject() },
     };
+    expr.tslice.end = @intCast(self.index - 1);
     return expr;
 }
 
@@ -162,7 +162,7 @@ fn parseExpression(self: *Parser, min_bp: i32) !*AST.Node(AST.Expression) {
             else => {
                 self.err = .{
                     .token = self.peek(),
-                    .tag = .ExpectedExpression,
+                    .tag = .expected_expression,
                 };
                 return Error.ErrorDuringParsing;
             },
@@ -207,7 +207,7 @@ fn parseObjList(self: *Parser) error{ NoSpaceLeft, OutOfMemory, ErrorDuringParsi
                 } else if (self.peek().tag != .rparen) {
                     self.err = .{
                         .token = self.peek(),
-                        .tag = .ExpectedObject,
+                        .tag = .expected_object,
                     };
                     return Error.ErrorDuringParsing;
                 }
@@ -215,7 +215,7 @@ fn parseObjList(self: *Parser) error{ NoSpaceLeft, OutOfMemory, ErrorDuringParsi
             else => {
                 self.err = .{
                     .token = self.peek(),
-                    .tag = .ExpectedObject,
+                    .tag = .expected_object,
                 };
                 return Error.ErrorDuringParsing;
             },
@@ -241,47 +241,50 @@ fn parseConsList(self: *Parser) error{ NoSpaceLeft, OutOfMemory, ErrorDuringPars
             .end = undefined,
         },
     };
-    defer ret.tslice.end = @intCast(self.index - 1);
-    if (tentry.tag == .rbracket) {
-        ret.val.name = AST.nil_list_ident;
-        ret.val.portlist = &.{};
-        _ = self.advance();
-        return ret;
-    }
-    ret.val = .{
-        .name = AST.cons_list_ident,
-        .portlist = try self.arena.alloc(AST.Node(AST.Object), cons_arity),
-    };
-    ret.val.portlist.?[0] = try self.parseObject();
-    var node = ret;
-    while (self.peek().tag == .comma) {
-        _ = self.advance();
-        var new_node: AST.Node(AST.Object) = .{
-            .val = AST.Object{
-                .name = AST.cons_list_ident,
-                .portlist = try self.arena.alloc(AST.Node(AST.Object), cons_arity),
+
+    tslice_end: {
+        if (tentry.tag == .rbracket) {
+            ret.val.name = AST.nil_list_ident;
+            ret.val.portlist = &.{};
+            _ = self.advance();
+            break :tslice_end;
+        }
+        ret.val = .{
+            .name = AST.cons_list_ident,
+            .portlist = try self.arena.alloc(AST.Node(AST.Object), cons_arity),
+        };
+        ret.val.portlist.?[0] = try self.parseObject();
+        var node = ret;
+        while (self.peek().tag == .comma) {
+            _ = self.advance();
+            var new_node: AST.Node(AST.Object) = .{
+                .val = AST.Object{
+                    .name = AST.cons_list_ident,
+                    .portlist = try self.arena.alloc(AST.Node(AST.Object), cons_arity),
+                },
+                .tslice = .{
+                    .start = @intCast(self.index),
+                    .end = undefined,
+                },
+            };
+            new_node.val.portlist.?[0] = try self.parseObject();
+            node.val.portlist.?[1] = new_node;
+            new_node.tslice.end = @intCast(self.index);
+            node = new_node;
+        }
+        try self.expectTag(.rbracket, &self.advance());
+        node.val.portlist.?[1] = AST.Node(AST.Object){
+            .val = .{
+                .name = AST.nil_list_ident,
+                .portlist = &.{},
             },
             .tslice = .{
                 .start = @intCast(self.index),
-                .end = undefined,
+                .end = @intCast(self.index),
             },
         };
-        new_node.val.portlist.?[0] = try self.parseObject();
-        new_node.tslice.end = @intCast(self.index);
-        node.val.portlist.?[1] = new_node;
-        node = new_node;
     }
-    try self.expectTag(.rbracket, &self.advance());
-    node.val.portlist.?[1] = AST.Node(AST.Object){
-        .val = .{
-            .name = AST.nil_list_ident,
-            .portlist = &.{},
-        },
-        .tslice = .{
-            .start = @intCast(self.index),
-            .end = @intCast(self.index),
-        },
-    };
+    ret.tslice.end = @intCast(self.index - 1);
     return ret;
 }
 
@@ -299,66 +302,70 @@ fn parseObject(self: *Parser) !AST.Node(AST.Object) {
     };
     var tuple = false;
     var list = false;
-    defer ret.tslice.end = @intCast(self.index - 1);
 
-    switch (tentry.tag) {
-        .identifier => {
-            ret.val.name = tentry.content.?;
+    // that's bad! But it is somewhat necessary for the tslice to be consistent.
+    ret_blk: {
+        switch (tentry.tag) {
+            .identifier => {
+                ret.val.name = tentry.content.?;
+                _ = self.advance();
+            },
+            .numeric_literal => {
+                ret.val.name = AST.number_special_ident;
+                const objlist = try self.arena.alloc(AST.Node(AST.Object), 1);
+                objlist[0] = AST.Node(AST.Object){
+                    .val = AST.Object{
+                        .name = tentry.content.?,
+                        .portlist = null,
+                    },
+                    .tslice = .{
+                        .start = @intCast(self.index),
+                        .end = @intCast(self.index),
+                    },
+                };
+                ret.val.portlist = objlist;
+                _ = self.advance();
+                // only here!
+                break :ret_blk;
+            },
+            .lbracket => {
+                list = true;
+            },
+            .lparen => {
+                tuple = true;
+            },
+            else => {
+                self.err = ParserError{
+                    .tag = .expected_object,
+                    .token = tentry,
+                };
+                return Error.ErrorDuringParsing;
+            },
+        }
+
+        if (list) {
             _ = self.advance();
-        },
-        .numeric_literal => {
-            ret.val.name = AST.number_special_ident;
-            const objlist = try self.arena.alloc(AST.Node(AST.Object), 1);
-            objlist[0] = AST.Node(AST.Object){
-                .val = AST.Object{
-                    .name = tentry.content.?,
-                    .portlist = null,
-                },
-                .tslice = .{
-                    .start = @intCast(self.index),
-                    .end = @intCast(self.index),
-                },
-            };
-            ret.val.portlist = objlist;
-            _ = self.advance();
-            return ret;
-        },
-        .lbracket => {
-            list = true;
-        },
-        .lparen => {
-            tuple = true;
-        },
-        else => {
-            self.err = ParserError{
-                .tag = .ExpectedObject,
-                .token = tentry,
-            };
-            return Error.ErrorDuringParsing;
-        },
-    }
+            return self.parseConsList();
+        }
 
-    if (list) {
-        _ = self.advance();
-        return self.parseConsList();
-    }
+        switch (self.peek().tag) {
+            .lparen => {
+                _ = self.advance();
+                const lst = try self.parseObjList();
+                ret.val.portlist = lst;
+                const closing = self.advance();
+                try self.expectTag(.rparen, &closing);
+            },
+            else => {
+                ret.val.portlist = null;
+            },
+        }
 
-    switch (self.peek().tag) {
-        .lparen => {
-            _ = self.advance();
-            const lst = try self.parseObjList();
-            ret.val.portlist = lst;
-            const closing = self.advance();
-            try self.expectTag(.rparen, &closing);
-        },
-        else => {
-            ret.val.portlist = null;
-        },
+        if (tuple) {
+            ret.val.name = try self.getTupleName(ret.val.portlist.?.len);
+        }
     }
-
-    if (tuple) {
-        ret.val.name = try self.getTupleName(ret.val.portlist.?.len);
-    }
+    ret.tslice.end = @intCast(self.index - 1);
     return ret;
 }
 
@@ -453,7 +460,7 @@ pub fn parseRule(self: *Parser, lhs: AST.Node(AST.Object)) !AST.Rule {
         else => {
             self.err = .{
                 .token = self.peek(),
-                .tag = .ExpectedStatement,
+                .tag = .expected_statement,
             };
             return Error.ErrorDuringParsing;
         },
@@ -500,7 +507,7 @@ pub fn parseStmt(self: *Parser) !?AST.Node(AST.Statement) {
                 else => {
                     self.err = .{
                         .token = self.peek(),
-                        .tag = .ExpectedStatement,
+                        .tag = .expected_statement,
                     };
                     return Error.ErrorDuringParsing;
                 },
@@ -515,7 +522,7 @@ pub fn parseStmt(self: *Parser) !?AST.Node(AST.Statement) {
         else => {
             self.err = .{
                 .token = self.peek(),
-                .tag = .ExpectedStatement,
+                .tag = .expected_statement,
             };
             return Error.ErrorDuringParsing;
         },

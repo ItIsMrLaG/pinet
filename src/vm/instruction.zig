@@ -45,38 +45,38 @@ tag: Tag,
 operand1: RegisterId = undefined,
 operand2: RegisterId = undefined,
 const Tag = union(enum) {
-    MkAgent: Agent.Id,
-    MkName,
-    MkSpecial: Special,
-    PutIntoPort: Port.Idx,
-    Push,
-    LoadArguments,
+    mk_agent: Agent.Id,
+    mk_name,
+    mk_special: Special,
+    put_into_port: Port.Idx,
+    push,
+    load_arguments,
 };
 
 pub fn mk_agent(id: Agent.Id, loc: RegisterId) Instruction {
     return .{
-        .tag = .{ .MkAgent = id },
+        .tag = .{ .mk_agent = id },
         .operand1 = loc,
     };
 }
 
 pub fn mk_name(loc: RegisterId) Instruction {
     return .{
-        .tag = .MkName,
+        .tag = .mk_name,
         .operand1 = loc,
     };
 }
 
 pub fn mk_special(special: Special, loc: RegisterId) Instruction {
     return .{
-        .tag = .{ .MkSpecial = special },
+        .tag = .{ .mk_special = special },
         .operand1 = loc,
     };
 }
 
 pub fn put_into_port(port_idx: Port.Idx, src: RegisterId, dest: RegisterId) Instruction {
     return .{
-        .tag = .{ .PutIntoPort = port_idx },
+        .tag = .{ .put_into_port = port_idx },
         .operand1 = src,
         .operand2 = dest,
     };
@@ -84,7 +84,7 @@ pub fn put_into_port(port_idx: Port.Idx, src: RegisterId, dest: RegisterId) Inst
 
 pub fn push(lhs: RegisterId, rhs: RegisterId) Instruction {
     return .{
-        .tag = .Push,
+        .tag = .push,
         .operand1 = lhs,
         .operand2 = rhs,
     };
@@ -92,7 +92,7 @@ pub fn push(lhs: RegisterId, rhs: RegisterId) Instruction {
 
 pub fn load_arguments() Instruction {
     return .{
-        .tag = .LoadArguments,
+        .tag = .load_arguments,
     };
 }
 
@@ -104,31 +104,31 @@ pub fn debugPrintInstruction(runtime: *const Runtime, conditioned_rules: []Condi
         const instrs = conditioned_rule.instructions;
         for (instrs) |instr| {
             defer std.debug.print("\n\n", .{});
-            if (instr.tag != .LoadArguments) {
+            if (instr.tag != .load_arguments) {
                 std.debug.print("REG{}", .{instr.operand1});
             }
-            if (instr.tag == .Push or instr.tag == .PutIntoPort) {
+            if (instr.tag == .push or instr.tag == .put_into_port) {
                 std.debug.print(" TO REG{}", .{instr.operand2});
             }
             std.debug.print(": ", .{});
             switch (instr.tag) {
-                .MkAgent => |id| {
+                .mk_agent => |id| {
                     const name = runtime.agent_id_map.findKey(id).?;
                     std.debug.print("MKAGENT {s}", .{name});
                 },
-                .Push => {
+                .push => {
                     std.debug.print("PUSH", .{});
                 },
-                .MkName => {
+                .mk_name => {
                     std.debug.print("MKNAME", .{});
                 },
-                .LoadArguments => {
+                .load_arguments => {
                     std.debug.print("LOAD ARGUMENTS", .{});
                 },
-                .PutIntoPort => |port| {
+                .put_into_port => |port| {
                     std.debug.print("PUT INTO {} PORT", .{port});
                 },
-                .MkSpecial => |special| {
+                .mk_special => |special| {
                     std.debug.print("MKSPECIAL {any}", .{special});
                 },
             }
@@ -136,9 +136,15 @@ pub fn debugPrintInstruction(runtime: *const Runtime, conditioned_rules: []Condi
     }
 }
 
-pub const CompiledRule = struct { CompiledLhs, []ConditionedRule };
+pub const CompiledRule = struct {
+    CompiledLhs,
+    []ConditionedRule,
+};
 
-pub const ConditionedRule = struct { condition: ?*CompiledCondition, instructions: CompiledPairs };
+pub const ConditionedRule = struct {
+    condition: ?*CompiledCondition,
+    instructions: CompiledPairs,
+};
 
 pub const CompiledCondition = union(enum) {
     binary_op: Binary,
@@ -168,11 +174,22 @@ pub const CompiledCondition = union(enum) {
 
 const CompiledPairs = []Instruction;
 
-const CompiledTerm = struct { reg: RegisterId, instrs: []Instruction };
+const CompiledTerm = struct {
+    reg: RegisterId,
+    instrs: []Instruction,
+};
 
-const NameInfo = struct { location: RegisterId, is_on_port: bool = false, used: bool = false };
+const NameInfo = struct {
+    location: RegisterId,
+    is_on_port: bool = false,
+    used: bool = false,
+    token_slice: TokenSlice,
+};
 
-const CompiledName = struct { name_info: *NameInfo, instrs: []Instruction };
+const CompiledName = struct {
+    name_info: *NameInfo,
+    instrs: []Instruction,
+};
 
 const Scope = struct {
     map: std.StringHashMap(NameInfo),
@@ -182,12 +199,12 @@ const Scope = struct {
         return self.free_idx;
     }
 
-    pub fn associate(self: *Scope, name: []const u8) !*NameInfo {
+    pub fn associate(self: *Scope, name: []const u8, tslice: TokenSlice) !*NameInfo {
         if (self.map.get(name)) |_| {
             return error.ValueExists;
         } else {
             const val = self.getFree();
-            const info = NameInfo{ .location = val };
+            const info = NameInfo{ .location = val, .token_slice = tslice };
             const result = try self.map.getOrPutValue(name, info);
             return result.value_ptr;
         }
@@ -204,7 +221,11 @@ const Scope = struct {
     }
 };
 
-pub fn compileNumber(runtime: *Runtime, obj: AST.Object, scope: *Scope) !CompiledTerm {
+pub fn compileNumber(
+    runtime: *Runtime,
+    obj: AST.Object,
+    scope: *Scope,
+) !CompiledTerm {
     const agent_id = runtime.agent_id_map.map.get(AST.number_special_ident).?;
     var list = std.ArrayList(Instruction).empty;
     const reg = scope.getFree();
@@ -216,8 +237,13 @@ pub fn compileNumber(runtime: *Runtime, obj: AST.Object, scope: *Scope) !Compile
     return .{ .reg = reg, .instrs = try list.toOwnedSlice(runtime.allocator) };
 }
 
-pub fn compileName(runtime: *Runtime, na: AST.Object, scope: *Scope) !CompiledName {
-    const name = na.name;
+pub fn compileName(
+    runtime: *Runtime,
+    na: AST.Node(AST.Object),
+    scope: *Scope,
+    diag: *CompilationError,
+) !CompiledName {
+    const name = na.val.name;
     var list = std.ArrayList(Instruction).empty;
     var name_info: *NameInfo = undefined;
     if (scope.map.getPtr(name)) |existing| {
@@ -225,17 +251,28 @@ pub fn compileName(runtime: *Runtime, na: AST.Object, scope: *Scope) !CompiledNa
             name_info = existing;
             existing.used = true;
         } else {
-            return error.NameUsedTwice;
+            diag.tag = .{
+                .name_used_twice = .{
+                    .first = existing.token_slice,
+                    .second = na.tslice,
+                },
+            };
+            return HandledError.NameUsedTwice;
         }
     } else {
-        name_info = try scope.associate(name);
+        name_info = try scope.associate(name, na.tslice);
         try list.append(runtime.allocator, Instruction.mk_name(name_info.location));
     }
 
     return .{ .name_info = name_info, .instrs = try list.toOwnedSlice(runtime.allocator) };
 }
 
-pub fn compileAgent(runtime: *Runtime, ag: AST.Object, scope: *Scope) !CompiledTerm {
+pub fn compileAgent(
+    runtime: *Runtime,
+    ag: AST.Object,
+    scope: *Scope,
+    diag: *CompilationError,
+) !CompiledTerm {
     var list = std.ArrayList(Instruction).empty;
     const id = try runtime.agent_id_map.get(ag.name);
     const arity = try runtime.agent_arities.get(id, ag.portlist.?.len);
@@ -243,52 +280,48 @@ pub fn compileAgent(runtime: *Runtime, ag: AST.Object, scope: *Scope) !CompiledT
     try list.append(runtime.allocator, Instruction.mk_agent(id, reg));
 
     for (0..arity) |idx| {
-        const port = ag.portlist.?[idx].val;
-        if (port.portlist) |_| {
-            if (port.isNumber()) {
+        const port = ag.portlist.?[idx];
+        if (port.val.portlist) |_| {
+            if (port.val.isNumber()) {
                 // number
-                const compiledNumber = try compileNumber(runtime, port, scope);
+                const compiledNumber = try compileNumber(runtime, port.val, scope);
                 try list.appendSlice(runtime.allocator, compiledNumber.instrs);
                 try list.append(runtime.allocator, Instruction.put_into_port(idx, compiledNumber.reg, reg));
             } else {
-                const compiledAgent = try compileAgent(runtime, port, scope);
+                const compiledAgent = try compileAgent(runtime, port.val, scope, diag);
                 try list.appendSlice(runtime.allocator, compiledAgent.instrs);
                 try list.append(runtime.allocator, Instruction.put_into_port(idx, compiledAgent.reg, reg));
             }
         } else {
-            const compiledName = try compileName(runtime, port, scope);
+            const compiledName = try compileName(runtime, port, scope, diag);
             try list.appendSlice(runtime.allocator, compiledName.instrs);
             try list.append(runtime.allocator, Instruction.put_into_port(idx, compiledName.name_info.location, reg));
-            // if (!compiledName.name_info.is_on_port) {
-            //     compiledName.name_info.is_on_port = true;
-            //     try list.append(runtime.allocator, Instruction.put_into_port(idx, compiledName.name_info.location, reg));
-            // } else {
-            //     // name is on port => make temp name and connect them
-            //     const free_reg = scope.getFree();
-            //     try list.append(runtime.allocator, Instruction.mk_name(free_reg));
-            //     try list.append(runtime.allocator, Instruction.put_into_port(idx, free_reg, reg));
-            //     try list.append(runtime.allocator, Instruction.push(free_reg, compiledName.name_info.location));
-            // }
         }
     }
 
     return .{ .reg = reg, .instrs = try list.toOwnedSlice(runtime.allocator) };
 }
 
-pub fn compileTerm(runtime: *Runtime, obj: AST.Object, scope: *Scope) !CompiledTerm {
-    if (obj.portlist) |_| {
-        if (obj.isNumber()) {
-            return try compileNumber(runtime, obj, scope);
+pub fn compileTerm(runtime: *Runtime, obj: AST.Node(AST.Object), scope: *Scope, diag: *CompilationError) !CompiledTerm {
+    if (obj.val.portlist) |_| {
+        if (obj.val.isNumber()) {
+            return try compileNumber(runtime, obj.val, scope);
         } else {
-            return try compileAgent(runtime, obj, scope);
+            return try compileAgent(runtime, obj.val, scope, diag);
         }
     } else {
-        const compiledName = try compileName(runtime, obj, scope);
+        const compiledName = try compileName(runtime, obj, scope, diag);
         return .{ .instrs = compiledName.instrs, .reg = compiledName.name_info.location };
     }
 }
 
-pub fn compilePairs(runtime: *Runtime, lhs: AST.Object, rhs: AST.Object, pairs: []AST.Node(AST.ActivePair)) !CompiledPairs {
+pub fn compilePairs(
+    runtime: *Runtime,
+    lhs: AST.Node(AST.Object),
+    rhs: AST.Node(AST.Object),
+    pairs: []AST.Node(AST.ActivePair),
+    diag: *CompilationError,
+) !CompiledPairs {
     var list = std.ArrayList(Instruction).empty;
     var scope = Scope.init(runtime.allocator);
     defer scope.deinit();
@@ -296,14 +329,21 @@ pub fn compilePairs(runtime: *Runtime, lhs: AST.Object, rhs: AST.Object, pairs: 
     // init the "arguments"
     try list.append(runtime.allocator, load_arguments());
 
-    for (lhs.portlist.?) |port_node| {
+    for (lhs.val.portlist.?) |port_node| {
         const port = port_node.val;
         if (port.portlist) |_| {
-            return error.AgentInLhsArgument;
+            diag.tag = .{ .agent_in_argument = port_node.tslice };
+            return HandledError.AgentInArgument;
         } else {
-            _ = scope.associate(port.name) catch |err| {
+            _ = scope.associate(port.name, port_node.tslice) catch |err| {
                 if (err == error.ValueExists) {
-                    return error.NameUsedTwice;
+                    diag.tag = .{
+                        .name_used_twice = .{
+                            .first = scope.map.get(port.name).?.token_slice,
+                            .second = port_node.tslice,
+                        },
+                    };
+                    return HandledError.NameUsedTwice;
                 } else {
                     return err;
                 }
@@ -312,15 +352,22 @@ pub fn compilePairs(runtime: *Runtime, lhs: AST.Object, rhs: AST.Object, pairs: 
     }
 
     // RHS may be a wildcard
-    if (rhs.portlist) |portlist| {
+    if (rhs.val.portlist) |portlist| {
         for (portlist) |port_node| {
             const port = port_node.val;
             if (port.portlist) |_| {
-                return error.AgentInRhsArgument;
+                diag.tag = .{ .agent_in_argument = port_node.tslice };
+                return HandledError.AgentInArgument;
             } else {
-                _ = scope.associate(port.name) catch |err| {
+                _ = scope.associate(port.name, port_node.tslice) catch |err| {
                     if (err == error.ValueExists) {
-                        return error.NameUsedTwice;
+                        diag.tag = .{
+                            .name_used_twice = .{
+                                .first = scope.map.get(port.name).?.token_slice,
+                                .second = port_node.tslice,
+                            },
+                        };
+                        return HandledError.NameUsedTwice;
                     } else {
                         return err;
                     }
@@ -328,9 +375,15 @@ pub fn compilePairs(runtime: *Runtime, lhs: AST.Object, rhs: AST.Object, pairs: 
             }
         }
     } else {
-        _ = scope.associate(rhs.name) catch |err| {
+        _ = scope.associate(rhs.val.name, rhs.tslice) catch |err| {
             if (err == error.ValueExists) {
-                return error.NameUsedTwice;
+                diag.tag = .{
+                    .name_used_twice = .{
+                        .first = scope.map.get(rhs.val.name).?.token_slice,
+                        .second = rhs.tslice,
+                    },
+                };
+                return HandledError.NameUsedTwice;
             } else {
                 return err;
             }
@@ -339,8 +392,8 @@ pub fn compilePairs(runtime: *Runtime, lhs: AST.Object, rhs: AST.Object, pairs: 
 
     for (pairs) |node_pair| {
         const pair = node_pair.val;
-        const compiledLhs = try compileTerm(runtime, pair.lhs.val, &scope);
-        const compiledRhs = try compileTerm(runtime, pair.rhs.val, &scope);
+        const compiledLhs = try compileTerm(runtime, pair.lhs, &scope, diag);
+        const compiledRhs = try compileTerm(runtime, pair.rhs, &scope, diag);
         try list.appendSlice(runtime.allocator, compiledLhs.instrs);
         try list.appendSlice(runtime.allocator, compiledRhs.instrs);
         try list.append(runtime.allocator, Instruction.push(compiledLhs.reg, compiledRhs.reg));
@@ -349,7 +402,12 @@ pub fn compilePairs(runtime: *Runtime, lhs: AST.Object, rhs: AST.Object, pairs: 
     return try list.toOwnedSlice(runtime.allocator);
 }
 
-pub fn compileCondition(runtime: *Runtime, port_info: *const std.StringHashMap(Port), condition: *AST.Node(AST.Expression)) !*CompiledCondition {
+pub fn compileCondition(
+    runtime: *Runtime,
+    port_info: *const std.StringHashMap(Port),
+    condition: *AST.Node(AST.Expression),
+    diag: *CompilationError,
+) !*CompiledCondition {
     const compiled = try runtime.allocator.create(CompiledCondition);
     switch (condition.val) {
         .atom => |atom_node| {
@@ -363,21 +421,22 @@ pub fn compileCondition(runtime: *Runtime, port_info: *const std.StringHashMap(P
                 if (port_info.get(atom.name)) |port_idx| {
                     compiled.* = .{ .atom = .{ .port = port_idx } };
                 } else {
-                    return error.UnknownName;
+                    diag.tag = .{ .unknown_name = condition.tslice };
+                    return HandledError.UnknownName;
                 }
             }
         },
         .binary_op => |binary| {
             compiled.* = .{ .binary_op = .{
                 .op = binary.tag,
-                .lhs = try compileCondition(runtime, port_info, binary.lhs),
-                .rhs = try compileCondition(runtime, port_info, binary.rhs),
+                .lhs = try compileCondition(runtime, port_info, binary.lhs, diag),
+                .rhs = try compileCondition(runtime, port_info, binary.rhs, diag),
             } };
         },
         .unary_op => |unary| {
             compiled.* = .{ .unary_op = .{
                 .op = unary.tag,
-                .item = try compileCondition(runtime, port_info, unary.item),
+                .item = try compileCondition(runtime, port_info, unary.item, diag),
             } };
         },
     }
@@ -385,7 +444,13 @@ pub fn compileCondition(runtime: *Runtime, port_info: *const std.StringHashMap(P
     return compiled;
 }
 
-pub fn compileWildcard(runtime: *Runtime, agent: AST.Node(AST.Object), name: AST.Node(AST.Object), rule_exprs: []AST.RuleExpression) !CompiledRule {
+pub fn compileWildcard(
+    runtime: *Runtime,
+    agent: AST.Node(AST.Object),
+    name: AST.Node(AST.Object),
+    rule_exprs: []AST.RuleExpression,
+    diag: *CompilationError,
+) !CompiledRule {
     const agent_id = try runtime.agent_id_map.get(agent.val.name);
 
     _ = try runtime.agent_arities.get(agent_id, agent.val.portlist.?.len);
@@ -402,9 +467,9 @@ pub fn compileWildcard(runtime: *Runtime, agent: AST.Node(AST.Object), name: AST
     try port_info.put(name.val.name, Port{ .idx = null, .owner = .rhs });
 
     for (rule_exprs) |rule_expr| {
-        const instructions = try compilePairs(runtime, agent.val, name.val, rule_expr.pairs);
+        const instructions = try compilePairs(runtime, agent, name, rule_expr.pairs, diag);
         try lst.append(runtime.allocator, .{
-            .condition = if (rule_expr.expr) |condition| try compileCondition(runtime, &port_info, condition) else null,
+            .condition = if (rule_expr.expr) |condition| try compileCondition(runtime, &port_info, condition, diag) else null,
             .instructions = instructions,
         });
     }
@@ -415,13 +480,13 @@ pub fn compileWildcard(runtime: *Runtime, agent: AST.Node(AST.Object), name: AST
     };
 }
 
-pub fn compileRule(runtime: *Runtime, rule: AST.Rule) !CompiledRule {
+pub fn compileRule(runtime: *Runtime, rule: AST.Rule, diag: *CompilationError) !CompiledRule {
     if (rule.lhs.val.portlist == null or rule.rhs.val.portlist == null) {
         // Wildcard rule
         if (rule.lhs.val.portlist) |_| {
-            return try compileWildcard(runtime, rule.lhs, rule.rhs, rule.rule_exprs);
+            return try compileWildcard(runtime, rule.lhs, rule.rhs, rule.rule_exprs, diag);
         } else if (rule.rhs.val.portlist) |_| {
-            return try compileWildcard(runtime, rule.rhs, rule.lhs, rule.rule_exprs);
+            return try compileWildcard(runtime, rule.rhs, rule.lhs, rule.rule_exprs, diag);
         } else {
             unreachable;
         }
@@ -446,9 +511,9 @@ pub fn compileRule(runtime: *Runtime, rule: AST.Rule) !CompiledRule {
     }
 
     for (rule.rule_exprs) |rule_expr| {
-        const instructions = try compilePairs(runtime, rule.lhs.val, rule.rhs.val, rule_expr.pairs);
+        const instructions = try compilePairs(runtime, rule.lhs, rule.rhs, rule_expr.pairs, diag);
         try lst.append(runtime.allocator, .{
-            .condition = if (rule_expr.expr) |condition| try compileCondition(runtime, &port_info, condition) else null,
+            .condition = if (rule_expr.expr) |condition| try compileCondition(runtime, &port_info, condition, diag) else null,
             .instructions = instructions,
         });
     }
@@ -458,3 +523,175 @@ pub fn compileRule(runtime: *Runtime, rule: AST.Rule) !CompiledRule {
         try lst.toOwnedSlice(runtime.allocator),
     };
 }
+
+pub const HandledError = CompilationError.HandledError;
+
+const TokenSlice = AST.TokenSlice;
+
+pub const CompilationError = struct {
+    tag: ErrTag = undefined,
+
+    const ErrTag = union(enum) {
+        name_used_twice: struct {
+            first: TokenSlice,
+            second: TokenSlice,
+        },
+        unknown_name: TokenSlice,
+        agent_in_argument: TokenSlice,
+    };
+
+    const HandledError = error{
+        AgentInArgument,
+        UnknownName,
+        NameUsedTwice,
+    };
+
+    const Printing = @import("printing.zig");
+    const Token = @import("../lexer.zig").Token;
+
+    fn multiLineMarkup(
+        connectedSlices: []const TokenSlice,
+        tokens: []const Token,
+        lines: *const Printing.Lines,
+        gpa: std.mem.Allocator,
+    ) ![]const u8 {
+        var _arena = std.heap.ArenaAllocator.init(gpa);
+        defer _arena.deinit();
+
+        const arena = _arena.allocator();
+        const init_line = tokens[connectedSlices[0].start].loc.start.line;
+        var idx = init_line;
+
+        var list: std.ArrayList([]const u8) = .empty;
+        defer list.deinit(gpa);
+
+        for (connectedSlices) |slice| {
+            const starting_line = tokens[slice.start].loc.start.line;
+            const ending_line = tokens[slice.end].loc.end.line;
+            while (idx < starting_line) : (idx += 1) {
+                try list.append(gpa, try lines.getEnumerated(arena, idx));
+            }
+
+            if (ending_line == idx) {
+                try list.append(gpa, try lines.getEnumerated(arena, idx));
+                try list.append(gpa, try singleLineMarkup(&.{slice}, tokens, arena, Printing.Lines.enumeration_padding));
+                idx += 1;
+            } else {
+                while (idx <= ending_line) : (idx += 1) {
+                    const enumerated = try lines.getEnumerated(arena, idx);
+                    try list.append(gpa, enumerated);
+                    if (idx == starting_line) {
+                        const markup_line = try arena.alloc(u8, enumerated.len);
+                        @memset(markup_line, ' ');
+                        const ch = tokens[slice.start].loc.start.ch + Printing.Lines.enumeration_padding;
+                        markup_line[ch] = '^';
+                        if (ch + 1 < markup_line.len) @memset(markup_line[ch + 1 ..], '~');
+                        try list.append(gpa, markup_line);
+                    } else if (idx == ending_line) {
+                        const markup_line = try arena.alloc(u8, enumerated.len);
+                        @memset(markup_line, ' ');
+                        const ch = tokens[slice.end].loc.end.ch + Printing.Lines.enumeration_padding;
+                        @memset(markup_line[Printing.Lines.enumeration_padding .. ch + 1], '~');
+                        try list.append(gpa, markup_line);
+                    } else {
+                        const markup_line = try arena.alloc(u8, enumerated.len);
+                        @memset(markup_line[0..Printing.Lines.enumeration_padding], ' ');
+                        @memset(markup_line[Printing.Lines.enumeration_padding..], '~');
+                        try list.append(gpa, markup_line);
+                    }
+                }
+            }
+        }
+        var ret: []const u8 = "";
+        for (list.items) |line| {
+            const cur = ret;
+            defer gpa.free(cur);
+            ret = try std.fmt.allocPrint(gpa, "{s}\n{s}", .{ ret, line });
+        }
+        return ret;
+    }
+
+    /// Doesn't check if the tokens are really on the same line. The caller owns the slice.
+    fn singleLineMarkup(
+        connectedSlices: []const TokenSlice,
+        tokens: []const Token,
+        allocator: std.mem.Allocator,
+        padding: usize,
+    ) ![]const u8 {
+        const markup_line = try allocator.alloc(u8, tokens[connectedSlices[connectedSlices.len - 1].end].loc.end.ch + padding);
+        @memset(markup_line, ' ');
+        for (connectedSlices) |slice| {
+            markup_line[tokens[slice.start].loc.start.ch + padding] = '^';
+            for (markup_line[tokens[slice.start].loc.start.ch + padding + 1 .. tokens[slice.end].loc.end.ch + padding]) |*c| {
+                c.* = '~';
+            }
+        }
+        return markup_line;
+    }
+
+    fn symbol(self: *const CompilationError) []const u8 {
+        return switch (self.tag) {
+            .name_used_twice => "Name used more than twice",
+            .unknown_name => "Unknown name",
+            .agent_in_argument => "Agent in the argument list",
+        };
+    }
+
+    fn hint(self: *const CompilationError) []const u8 {
+        return switch (self.tag) {
+            .name_used_twice => "Names should be used exactly twice in one scope. Consider using duplicator agents (Dup2, Dup3, ...).",
+            .unknown_name => "Check for typos.",
+            .agent_in_argument =>
+            \\What you're probably trying to do is nested pattern matching.
+            \\Unfortunately it is either unimplemented or will never be implemented.
+            \\Consider using real interaction nets nested pattern matching using additional helper agents.
+        };
+    }
+
+    /// The message ends with a line break. The caller owns the message.
+    pub fn getPrettyMessage(
+        self: *const CompilationError,
+        source_file: [:0]const u8,
+        tokens: []const Token,
+        gpa: std.mem.Allocator,
+    ) ![]const u8 {
+        var lines = try Printing.Lines.init(gpa, source_file);
+        defer lines.deinit();
+        const start_token, const end_token, const connectedSlices: []const TokenSlice = switch (self.tag) {
+            .unknown_name, .agent_in_argument => |tslice| .{ tokens[tslice.start], tokens[tslice.end], &.{tslice} },
+            .name_used_twice => |names| .{ tokens[names.first.start], tokens[names.second.end], &.{ names.first, names.second } },
+        };
+
+        if (start_token.loc.start.line == end_token.loc.end.line) {
+            const line = lines.lines[start_token.loc.start.line];
+            const marked_line = try singleLineMarkup(connectedSlices, tokens, gpa, 0);
+            defer gpa.free(marked_line);
+            return try std.fmt.allocPrint(
+                gpa,
+                "Rule compilation error on line {} index {}: {s}\n{s}\n{s}\n\nHint: {s}\n",
+                .{
+                    start_token.loc.start.line + 1,
+                    start_token.loc.start.ch + 1,
+                    self.symbol(),
+                    line,
+                    marked_line,
+                    self.hint(),
+                },
+            );
+        } else {
+            const marked_lines = try multiLineMarkup(connectedSlices, tokens, &lines, gpa);
+            defer gpa.free(marked_lines);
+            return try std.fmt.allocPrint(
+                gpa,
+                "Rule compilation error starting on line {} index {}: {s}\n{s}\n\nHint: {s}\n",
+                .{
+                    start_token.loc.start.line + 1,
+                    start_token.loc.start.ch + 1,
+                    self.symbol(),
+                    marked_lines,
+                    self.hint(),
+                },
+            );
+        }
+    }
+};

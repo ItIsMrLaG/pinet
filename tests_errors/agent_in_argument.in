@@ -1,0 +1,10 @@
+
+A(
+    Agent(
+        a,
+        b,
+        c
+    ),
+    B()
+) >< C(D()) =>
+    a ~ b, c ~ Eraser();

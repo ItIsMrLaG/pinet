@@ -7,6 +7,7 @@ const Types = @import("types.zig");
 const Instruction = @import("instruction.zig");
 const Builtin = @import("builtin.zig");
 const Importer = @import("importer.zig");
+const Token = @import("../lexer.zig").Token;
 
 const Config = @import("../vm.zig").Config;
 
@@ -18,6 +19,12 @@ const Name = Types.Name;
 const Equation = Types.Equation;
 const AgentsKey = Instruction.AgentsKey;
 const ConditionedRule = Instruction.ConditionedRule;
+
+pub const File = struct {
+    path: []const u8,
+    contents: [:0]const u8,
+    tokens: []Token,
+};
 
 pub const IdCountingHashMap = struct {
     map: std.StringHashMap(Agent.Id),
@@ -143,9 +150,9 @@ wildcard_table: std.AutoHashMap(Agent.Id, []ConditionedRule),
 /// Importer contains the gpa, provided in .init(...)
 importer: Importer,
 
-main_file_path: []const u8,
+main_file: File,
 
-pub fn init(gpa: std.mem.Allocator, page: std.mem.Allocator, main_file_path: []const u8) !Self {
+pub fn init(gpa: std.mem.Allocator, page: std.mem.Allocator, main_file: File) !Self {
     const arena = try gpa.create(std.heap.ArenaAllocator);
     arena.* = std.heap.ArenaAllocator.init(page);
 
@@ -169,7 +176,7 @@ pub fn init(gpa: std.mem.Allocator, page: std.mem.Allocator, main_file_path: []c
         .threaded = threaded,
         .io = threaded.io(),
         .importer = .init(gpa),
-        .main_file_path = main_file_path,
+        .main_file = main_file,
     };
 }
 pub fn deinit(self: *Self, gpa: std.mem.Allocator) void {

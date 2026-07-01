@@ -147,30 +147,30 @@ pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
 pub fn execInstructions(vm: *VirtualMachine, instrs: []Instruction, lagent: *Agent, ragent: *Agent, wildcarded: bool) !void {
     for (instrs) |instruction| {
         switch (instruction.tag) {
-            .MkAgent => |id| {
+            .mk_agent => |id| {
                 const ag = try vm.agent_heap.getOne();
                 ag.* = .{ .id = id, .ports = @splat(null) };
                 vm.registers[instruction.operand1] = .{ .agent = ag };
             },
-            .MkSpecial => |special| {
+            .mk_special => |special| {
                 vm.registers[instruction.operand1] = .{ .special = special };
             },
-            .PutIntoPort => |port_idx| {
+            .put_into_port => |port_idx| {
                 vm.registers[instruction.operand2].agent.ports[port_idx] = vm.registers[instruction.operand1];
             },
-            .Push => {
+            .push => {
                 const eq = Equation{
                     .lhs = vm.registers[instruction.operand1],
                     .rhs = vm.registers[instruction.operand2],
                 };
                 try vm.runtime.equation_deque.pushBack(vm.runtime.allocator, eq);
             },
-            .MkName => {
+            .mk_name => {
                 const name = try vm.name_heap.getOne();
                 name.* = .{ .port = null };
                 vm.registers[instruction.operand1] = .{ .name = name };
             },
-            .LoadArguments => {
+            .load_arguments => {
                 const larity = vm.runtime.agent_arities.map.get(lagent.id).?;
                 var idx: u16 = 0;
                 for (0..larity) |port_idx| {
@@ -249,7 +249,7 @@ pub fn runProgram(vm: *VirtualMachine, program: AST.Program) !void {
             },
             .use_stmt => |import_path| {
                 const final_import_path = if (std.fs.path.isAbsolute(import_path)) try vm.gpa.dupe(u8, import_path) else blk: {
-                    const dirname = std.fs.path.dirname(vm.runtime.main_file_path).?;
+                    const dirname = std.fs.path.dirname(vm.runtime.main_file.path).?;
                     break :blk try std.fs.path.resolve(vm.gpa, &.{ dirname, import_path });
                 };
                 defer vm.gpa.free(final_import_path);
@@ -279,7 +279,24 @@ pub fn runProgram(vm: *VirtualMachine, program: AST.Program) !void {
                 }
             },
             .rule => |rule| {
-                const compiled_rule = try Instruction.compileRule(vm.runtime, rule);
+                var diag = Instruction.CompilationError{};
+                const compiled_rule = Instruction.compileRule(vm.runtime, rule, &diag) catch |err| {
+                    const HandledError = Instruction.HandledError;
+                    switch (err) {
+                        HandledError.AgentInArgument, HandledError.UnknownName, HandledError.NameUsedTwice => {
+                            const message =
+                                try diag.getPrettyMessage(
+                                    vm.runtime.main_file.contents,
+                                    vm.runtime.main_file.tokens,
+                                    vm.gpa,
+                                );
+                            defer vm.gpa.free(message);
+                            std.debug.print("{s}", .{message});
+                            return error.CompilationError;
+                        },
+                        else => return err,
+                    }
+                };
                 if (Config.debug_printing.print_compiled_instructions) {
                     try Instruction.debugPrintInstruction(vm.runtime, compiled_rule[1]);
                     const guard_size = 40;

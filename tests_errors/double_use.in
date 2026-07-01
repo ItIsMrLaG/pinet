@@ -1,0 +1,5 @@
+// Double use
+A(name) >< B() =>
+    HelloWorld() ~ Eraser(),
+
+    name ~ C(name);

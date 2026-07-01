@@ -7,6 +7,7 @@ pub const Token = struct {
     loc: Loc,
     content: ?[]const u8,
 
+    /// Indexing starts at 0. For user information increment the values by one.
     pub const CharPosition = struct {
         ch: u32,
         line: u32,
@@ -126,10 +127,11 @@ pub const Tokenizer = struct {
         if (self.buffer[self.index] == '\n') {
             self.pos.line += 1;
             self.pos.ch = 0;
+        } else {
+            self.pos.ch += 1;
         }
         self.index += 1;
         self.pos.index = self.index;
-        self.pos.ch += 1;
     }
 
     pub fn init(buffer: [:0]const u8) Tokenizer {
@@ -138,8 +140,8 @@ pub const Tokenizer = struct {
             .index = 0,
             .pos = .{
                 .index = 0,
-                .ch = 1,
-                .line = 1,
+                .ch = 0,
+                .line = 0,
             },
         };
     }

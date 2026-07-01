@@ -40,9 +40,16 @@ pub fn import(self: *Self, path: []const u8, runtime: *Runtime) !void {
         .of(u8),
         0,
     );
+    try self.imported.put(resolved_path, contents);
 
     const tokens = try Lexer.tokenize(self.gpa, contents);
     defer self.gpa.free(tokens);
+    const file = Runtime.File{
+        .contents = contents,
+        .path = resolved_path,
+        .tokens = tokens,
+    };
+
     var parser = try Parser.init(tokens, self.gpa, self.gpa);
     defer parser.deinit(self.gpa);
 
@@ -57,7 +64,24 @@ pub fn import(self: *Self, path: []const u8, runtime: *Runtime) !void {
     for (program.statements) |statement| {
         switch (statement.val) {
             .rule => |rule| {
-                const compiled_rule = try Instruction.compileRule(runtime, rule);
+                var diag = Instruction.CompilationError{};
+                const compiled_rule = Instruction.compileRule(runtime, rule, &diag) catch |err| {
+                    const HandledError = Instruction.HandledError;
+                    switch (err) {
+                        HandledError.AgentInArgument, HandledError.UnknownName, HandledError.NameUsedTwice => {
+                            const message =
+                                try diag.getPrettyMessage(
+                                    file.contents,
+                                    file.tokens,
+                                    self.gpa,
+                                );
+                            defer self.gpa.free(message);
+                            std.debug.print("Imported file {s}\n{s}", .{ file.path, message });
+                            return error.CompilationError;
+                        },
+                        else => return err,
+                    }
+                };
                 if (Config.debug_printing.print_compiled_instructions) {
                     try Instruction.debugPrintInstruction(runtime, compiled_rule[1]);
                     const guard_size = 40;
@@ -84,8 +108,6 @@ pub fn import(self: *Self, path: []const u8, runtime: *Runtime) !void {
             },
         }
     }
-
-    try self.imported.put(resolved_path, contents);
 }
 
 pub fn init(gpa: std.mem.Allocator) Importer {
