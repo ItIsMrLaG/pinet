@@ -12,7 +12,8 @@ const Interaction = @import("vm/interactions.zig");
 const Builtin = @import("vm/builtin.zig");
 const Printing = @import("vm/printing.zig");
 const memory = @import("vm/memory.zig");
-pub const Heap = memory.Heap;
+pub const BasicHeap = memory.BasicHeap;
+pub const IHeap = memory.IHeap;
 
 pub const Config = @import("root.zig").Config;
 
@@ -27,15 +28,15 @@ const Self = VirtualMachine;
 const number_of_registers = 100;
 
 // the heaps should be in the runtime!
-name_heap: Heap(Name),
-agent_heap: Heap(Agent),
+name_heap: IHeap(Name),
+agent_heap: IHeap(Agent),
 registers: [number_of_registers]Value,
 
 runtime: *Runtime,
 gpa: std.mem.Allocator,
 
 pub fn createAgent(vm: *VirtualMachine, id: Agent.Id) !*Agent {
-    const ag = try vm.agent_heap.getOne();
+    const ag = try vm.agent_heap.allocOne();
     ag.id = id;
     ag.ports = @splat(null);
     return ag;
@@ -55,20 +56,49 @@ pub fn pushUrgent(vm: *VirtualMachine, eq: Equation) !void {
     try vm.runtime.urgent_deque.pushBack(vm.runtime.allocator, eq);
 }
 
+fn HeapType(comptime T: type) type {
+    switch (Config.heap) {
+        .basic => return BasicHeap(T),
+    }
+}
+
+fn heapInit(comptime T: type, default_heap_size: comptime_int, gpa: std.mem.Allocator) !IHeap(T) {
+    const basic_heap = try gpa.create(HeapType(T));
+
+    basic_heap.* = switch (Config.heap) {
+        .basic => try BasicHeap(T).init(gpa, default_heap_size),
+    };
+
+    return basic_heap.heap();
+}
+
+fn heapDeinit(comptime T: type, heap: IHeap(T), gpa: std.mem.Allocator) void {
+    const basic_heap: *HeapType(T) = @ptrCast(@alignCast(heap.ptr));
+
+    switch (Config.heap) {
+        .basic => {
+            basic_heap.deinit(gpa);
+        },
+    }
+
+    gpa.destroy(basic_heap);
+}
+
 pub fn init(gpa: std.mem.Allocator, runtime: *Runtime) !Self {
     const default_heap_size = 1024 * 1024 * 4;
+
     return .{
         .runtime = runtime,
-        .agent_heap = try Heap(Agent).init(gpa, default_heap_size),
-        .name_heap = try Heap(Name).init(gpa, default_heap_size),
+        .agent_heap = try heapInit(Agent, default_heap_size, gpa),
+        .name_heap = try heapInit(Name, default_heap_size, gpa),
         .registers = @splat(undefined),
         .gpa = gpa,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.name_heap.deinit(self.gpa);
-    self.agent_heap.deinit(self.gpa);
+    heapDeinit(Agent, self.agent_heap, self.gpa);
+    heapDeinit(Name, self.name_heap, self.gpa);
 }
 
 pub fn getNumberType(str: []const u8) !Types.Special {
@@ -103,7 +133,7 @@ pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
     if (obj.portlist) |portlist| {
         const agent_id = try vm.runtime.agent_id_map.get(obj.name);
         const arity = try vm.runtime.agent_arities.get(agent_id, obj.portlist.?.len);
-        var agent = try vm.agent_heap.getOne();
+        var agent = try vm.agent_heap.allocOne();
         agent.* = .{ .id = agent_id, .ports = @splat(null) };
         {
             var idx: u8 = 0;
@@ -117,7 +147,7 @@ pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
         if (vm.runtime.associated_names.getPtr(obj.name)) |maybe_name| {
             if (maybe_name.*) |name| {
                 if (name.port) |port| {
-                    defer Heap(Name).freeOne(name);
+                    defer vm.name_heap.freeOne(name);
                     // if the names are interconnected, then
                     // we have to free from the cyclic crossreference
                     if (port == .name) {
@@ -135,20 +165,20 @@ pub fn createObject(vm: *VirtualMachine, obj: AST.Object) !Value {
                 }
             }
         } else {
-            const name = try vm.name_heap.getOne();
+            const name = try vm.name_heap.allocOne();
             name.* = .{ .port = null };
             try vm.runtime.associated_names.put(obj.name, name);
             return Value{ .name = name };
         }
     }
-    unreachable;
+    unreachable; // FIX: is it necessary
 }
 
 pub fn execInstructions(vm: *VirtualMachine, instrs: []Instruction, lagent: *Agent, ragent: *Agent, wildcarded: bool) !void {
     for (instrs) |instruction| {
         switch (instruction.tag) {
             .mk_agent => |id| {
-                const ag = try vm.agent_heap.getOne();
+                const ag = try vm.agent_heap.allocOne();
                 ag.* = .{ .id = id, .ports = @splat(null) };
                 vm.registers[instruction.operand1] = .{ .agent = ag };
             },
@@ -166,7 +196,7 @@ pub fn execInstructions(vm: *VirtualMachine, instrs: []Instruction, lagent: *Age
                 try vm.runtime.equation_deque.pushBack(vm.runtime.allocator, eq);
             },
             .mk_name => {
-                const name = try vm.name_heap.getOne();
+                const name = try vm.name_heap.allocOne();
                 name.* = .{ .port = null };
                 vm.registers[instruction.operand1] = .{ .name = name };
             },
@@ -177,19 +207,19 @@ pub fn execInstructions(vm: *VirtualMachine, instrs: []Instruction, lagent: *Age
                     // For some reason just assigning register to a port
                     // directly causes some trouble, need to look into that.
                     //
-                    vm.registers[idx] = .{ .name = try vm.name_heap.getOne() };
+                    vm.registers[idx] = .{ .name = try vm.name_heap.allocOne() };
                     vm.registers[idx].name.port = lagent.ports[port_idx];
                     idx += 1;
                 }
                 if (!wildcarded) {
                     const rarity = vm.runtime.agent_arities.map.get(ragent.id).?;
                     for (0..rarity) |port_idx| {
-                        vm.registers[idx] = .{ .name = try vm.name_heap.getOne() };
+                        vm.registers[idx] = .{ .name = try vm.name_heap.allocOne() };
                         vm.registers[idx].name.port = ragent.ports[port_idx];
                         idx += 1;
                     }
                 } else {
-                    vm.registers[idx] = .{ .name = try vm.name_heap.getOne() };
+                    vm.registers[idx] = .{ .name = try vm.name_heap.allocOne() };
                     vm.registers[idx].name.port = .{ .agent = ragent };
                     idx += 1;
                 }
@@ -236,7 +266,7 @@ pub fn runProgram(vm: *VirtualMachine, program: AST.Program) !void {
                     if (vm.runtime.associated_names.get(name)) |maybe_wire| {
                         defer _ = vm.runtime.associated_names.remove(name);
                         if (maybe_wire) |wire| {
-                            wire.unchain();
+                            wire.unchain(vm.name_heap);
                             if (wire.port) |port| {
                                 // of course, there shouldn't be anything other than an agent
                                 try Builtin.Eraser.erase(vm, port.agent);
