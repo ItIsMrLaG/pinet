@@ -6,9 +6,9 @@ const pinet = @import("pinet");
 const clap = @import("clap");
 
 const help =
-    \\-h, --help               Display this help and exit.
-    \\-t, --threads <usize>    Specify number of threads to be run on (this does not work yet).
-    \\-f, --filepath <str>     Specify file to be interpreted. Default: ./tests/list_sorting.in
+    \\-h, --help                     Display this help and exit.
+    \\-t, --threads <usize>          Specify number of threads to be run on (this does not work yet).
+    \\-f, --filepath <str>           Specify file to be interpreted. Default: ./tests/list_sorting.in
     \\
 ;
 const params = clap.parseParamsComptime(help);
@@ -45,6 +45,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         std.debug.print("File not specified, executing {s}\nConsider using \"--help\"\n", .{filepath});
     }
+
     const contents = try Io.Dir.readFileAllocOptions(
         Io.Dir.cwd(),
         io,
@@ -72,8 +73,7 @@ pub fn main(init: std.process.Init) !void {
             const prettyLines = try parser.err.?.getPrettyLine(&parser, contents);
             const messageLine = try parser.err.?.messageLine(&parser);
             std.debug.print("{s}\n\n{s}\n{s}\n", .{ messageLine, prettyLines[0], prettyLines[1] });
-            // this error is handled
-            return;
+            std.process.exit(1);
         }
         return err;
     };
@@ -81,5 +81,10 @@ pub fn main(init: std.process.Init) !void {
     defer runtime.deinit(gpa);
     var vm = try pinet.VM.init(gpa, &runtime);
     defer vm.deinit();
-    try vm.runProgram(program);
+    vm.runProgram(program) catch |err| {
+        if (err == error.CompilationError) {
+            std.process.exit(1);
+        }
+        return err;
+    };
 }

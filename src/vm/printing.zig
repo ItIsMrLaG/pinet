@@ -41,24 +41,21 @@ pub const Lines = struct {
     lines: [][]const u8,
     gpa: std.mem.Allocator,
 
-    /// 4 on line index, 2 on additional characters
-    pub const enumeration_padding = 6;
+    pub const padding = "    | ";
+    pub const enumeration_padding = padding.len;
 
     pub fn init(gpa: std.mem.Allocator, contents: [:0]const u8) !Lines {
         var list = std.ArrayList([]const u8).empty;
-        var st: usize = 0;
-        var idx: usize = 0;
-        while (true) : (idx += 1) {
-            const c = contents[idx];
-            if (c == '\n' or c == 0) {
-                try list.append(gpa, contents[st..idx]);
-                st = idx + 1;
-                if (c == 0) break;
-            }
+        errdefer list.deinit(gpa);
+
+        var it = std.mem.splitScalar(u8, contents, '\n');
+        while (it.next()) |line| {
+            try list.append(gpa, line);
         }
+
         return .{
-            .lines = try list.toOwnedSlice(gpa),
             .gpa = gpa,
+            .lines = try list.toOwnedSlice(gpa),
         };
     }
 
@@ -177,10 +174,10 @@ pub fn tryPrint(vm: *const VM, val: Value) !void {
         return err;
     };
     defer vm.gpa.free(bytes);
-
+    const string = std.mem.sliceTo(bytes, 0);
     var stdout = std.Io.File.stdout();
     var writer = stdout.writerStreaming(vm.runtime.io, &.{});
-    try writer.interface.print("{s}\n", .{bytes});
+    try writer.interface.print("{s}\n", .{string});
 }
 
 test {
