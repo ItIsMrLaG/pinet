@@ -46,13 +46,21 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/ast/ast.zig"),
     });
 
+    const mod_debug = b.addModule("debug", .{
+        .root_source_file = b.path("src/debug.zig"),
+    });
+
     const mod_printing = b.addModule("printing", .{
         .root_source_file = b.path("src/printing/printing.zig"),
+        .imports = &.{
+            .{ .name = "debug", .module = mod_debug },
+        },
     });
 
     const mod_shared_runtime = b.addModule("shared_runtime", .{
         .root_source_file = b.path("src/shared_runtime/runtime.zig"),
         .imports = &.{
+            .{ .name = "debug", .module = mod_debug },
             .{ .name = "ast", .module = mod_ast },
         },
     });
@@ -73,6 +81,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ast", .module = mod_ast },
             .{ .name = "printing", .module = mod_printing },
             .{ .name = "shared_runtime", .module = mod_shared_runtime },
+            .{ .name = "debug", .module = mod_debug },
         },
     });
 
@@ -93,6 +102,7 @@ pub fn build(b: *std.Build) void {
                 .{ .name = "compilation", .module = mod_compilation },
                 .{ .name = "shared_runtime", .module = mod_shared_runtime },
                 .{ .name = "vm", .module = mod_vm },
+                .{ .name = "debug", .module = mod_debug },
             },
         }),
         // To use llvm debugger:
@@ -123,6 +133,7 @@ pub fn build(b: *std.Build) void {
 
     mod_printing.addImport("config", mod_options);
     mod_shared_runtime.addImport("config", mod_options);
+    mod_debug.addImport("config", mod_options);
     mod_vm.addImport("config", mod_options);
 
     b.installArtifact(exe);

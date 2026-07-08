@@ -12,6 +12,7 @@ const VM = @import("vm");
 const Builtin = VM.Builtin;
 const Importer = VM.Importer;
 const Token = @import("ast").Lexer.Token;
+const Debug = @import("debug");
 
 const Config = @import("config");
 
@@ -61,9 +62,8 @@ pub const IdCountingHashMap = struct {
         if (self.map.get(key)) |val| {
             return val;
         } else {
-            if (Config.debug_printing.print_compiled_instructions) {
-                std.debug.print("Getting {} for key: {s}\n", .{ self.free_id, key });
-            }
+            Debug.log(.print_compiled_instructions, "Getting {} for key: {s}\n", .{ self.free_id, key });
+
             try self.map.put(key, self.free_id);
             defer self.free_id += 1;
             return self.free_id;

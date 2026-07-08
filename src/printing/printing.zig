@@ -3,6 +3,7 @@ const std = @import("std");
 
 const Runtime = @import("shared_runtime");
 const Types = Runtime.Types;
+const Debug = @import("debug");
 
 const Agent = Types.Agent;
 const Value = Types.Value;
@@ -159,14 +160,14 @@ pub fn tryPrint(runtime: *const Runtime, gpa: std.mem.Allocator, val: Value) !vo
         cur = cur.name.port.?;
         idx += 1;
     }) {
-        if (Config.debug_printing.print_interactions) {
-            std.debug.print("(n)", .{});
-        }
+        Debug.log(.print_interactions, "(n)", .{});
+
         if (idx > max_cycle_length) {
             std.debug.print("{any} is cyclic\n", .{val.name.*});
             return;
         }
     }
+
     const bytes = getAgentSymbol(runtime, gpa, cur.agent) catch |err| {
         if (err == error.NoSpaceLeft) {
             std.debug.print("Agent symbol is too long to print\n", .{});
@@ -174,6 +175,7 @@ pub fn tryPrint(runtime: *const Runtime, gpa: std.mem.Allocator, val: Value) !vo
         }
         return err;
     };
+
     defer gpa.free(bytes);
     const string = std.mem.sliceTo(bytes, 0);
     var stdout = std.Io.File.stdout();
