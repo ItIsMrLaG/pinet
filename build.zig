@@ -43,15 +43,18 @@ pub fn build(b: *std.Build) void {
     const optimize = b.standardOptimizeOption(.{});
 
     const mod_ast = b.addModule("ast", .{
+        .target = target,
         .root_source_file = b.path("src/ast/ast.zig"),
     });
 
     const mod_debug = b.addModule("debug", .{
+        .target = target,
         .root_source_file = b.path("src/debug.zig"),
     });
 
     const mod_printing = b.addModule("printing", .{
         .root_source_file = b.path("src/printing/printing.zig"),
+        .target = target,
         .imports = &.{
             .{ .name = "debug", .module = mod_debug },
         },
@@ -59,6 +62,7 @@ pub fn build(b: *std.Build) void {
 
     const mod_shared_runtime = b.addModule("shared_runtime", .{
         .root_source_file = b.path("src/shared_runtime/runtime.zig"),
+        .target = target,
         .imports = &.{
             .{ .name = "debug", .module = mod_debug },
             .{ .name = "ast", .module = mod_ast },
@@ -67,6 +71,7 @@ pub fn build(b: *std.Build) void {
 
     const mod_compilation = b.addModule("compilation", .{
         .root_source_file = b.path("src/compilation/compilation.zig"),
+        .target = target,
         .imports = &.{
             .{ .name = "ast", .module = mod_ast },
             .{ .name = "printing", .module = mod_printing },
@@ -76,6 +81,7 @@ pub fn build(b: *std.Build) void {
 
     const mod_vm = b.addModule("vm", .{
         .root_source_file = b.path("src/vm/vm.zig"),
+        .target = target,
         .imports = &.{
             .{ .name = "compilation", .module = mod_compilation },
             .{ .name = "ast", .module = mod_ast },
@@ -91,33 +97,25 @@ pub fn build(b: *std.Build) void {
     mod_printing.addImport("shared_runtime", mod_shared_runtime);
     mod_ast.addImport("printing", mod_printing);
 
+    const submodules: []const std.Build.Module.Import = &.{
+        .{ .name = "ast", .module = mod_ast },
+        .{ .name = "printing", .module = mod_printing },
+        .{ .name = "compilation", .module = mod_compilation },
+        .{ .name = "shared_runtime", .module = mod_shared_runtime },
+        .{ .name = "vm", .module = mod_vm },
+        .{ .name = "debug", .module = mod_debug },
+    };
+
     const exe = b.addExecutable(.{
         .name = "pinet",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ast", .module = mod_ast },
-                .{ .name = "printing", .module = mod_printing },
-                .{ .name = "compilation", .module = mod_compilation },
-                .{ .name = "shared_runtime", .module = mod_shared_runtime },
-                .{ .name = "vm", .module = mod_vm },
-                .{ .name = "debug", .module = mod_debug },
-            },
+            .imports = submodules,
         }),
         // To use llvm debugger:
         // .use_llvm = true,
-    });
-
-    const exe_memory = b.addExecutable(.{
-        .name = "memory",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/shared_runtime/memory.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{},
-        }),
     });
 
     // for perf
@@ -164,12 +162,7 @@ pub fn build(b: *std.Build) void {
         .root_module = exe.root_module,
     });
 
-    const exe_tests_memory = b.addTest(.{
-        .root_module = exe_memory.root_module,
-    });
-
     const run_exe_tests = b.addRunArtifact(exe_tests);
-    const run_memory_tests = b.addRunArtifact(exe_tests_memory);
 
     const golden_testing_run_cmd, const run_golden_tests_tests = setupGoldenTesting(b, target, optimize);
 
@@ -181,7 +174,13 @@ pub fn build(b: *std.Build) void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_exe_tests.step);
+
+    for (submodules) |submodule| {
+        const submodule_tests = b.addTest(.{ .root_module = submodule.module, .name = submodule.name });
+        const run_submodule_tests = b.addRunArtifact(submodule_tests);
+        test_step.dependOn(&run_submodule_tests.step);
+    }
+
     test_step.dependOn(&run_golden_tests_tests.step);
     test_step.dependOn(&golden_testing_run_cmd.step);
-    test_step.dependOn(&run_memory_tests.step);
 }

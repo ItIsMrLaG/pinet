@@ -206,7 +206,6 @@ pub fn ObjPool(comptime T: type) type {
 }
 
 test "ObjPool: basic allocation and free" {
-    std.debug.print("\n>>> Running ObjPool test <<<\n", .{});
     const gpa = std.testing.allocator;
 
     const meow = struct {
@@ -223,11 +222,9 @@ test "ObjPool: basic allocation and free" {
     item_ptr.meow = 1;
     item_ptr.sh = 2;
 
-    my_heap.printUsage();
     try std.testing.expectEqual(@as(meow, .{ .meow = 1, .sh = 2 }), item_ptr.*);
 
     my_heap.freeOne(item_ptr);
-    my_heap.printUsage();
 }
 
 test "ObjPool: basic allocation and free, type smaller than usize" {
@@ -240,11 +237,9 @@ test "ObjPool: basic allocation and free, type smaller than usize" {
     const item_ptr = try my_heap.allocOne();
 
     item_ptr.* = 56;
-    my_heap.printUsage();
     try std.testing.expectEqual(@as(i32, 56), item_ptr.*);
 
     my_heap.freeOne(item_ptr);
-    my_heap.printUsage();
 }
 
 test "ObjPool: basic allocation and free with data alignment smaller than usize alignment" {
@@ -268,11 +263,9 @@ test "ObjPool: basic allocation and free with data alignment smaller than usize 
     item_ptr.vibrases = 7;
     item_ptr.eyes = 89;
 
-    my_heap.printUsage();
     try std.testing.expectEqual(@as(meow2, .{ .ears = 0, .legs = 0, .vibrases = 7, .eyes = 89 }), item_ptr.*);
 
     my_heap.freeOne(item_ptr);
-    my_heap.printUsage();
 }
 
 test "ObjPool: Out of memory " {
@@ -287,12 +280,10 @@ test "ObjPool: Out of memory " {
 
     item_ptr.* = 79;
 
-    my_heap.printUsage();
     try std.testing.expectEqual(@as(u64, 79), item_ptr.*);
     try std.testing.expectError(error.OutOfMemory, item_ptr2);
 
     my_heap.freeOne(item_ptr);
-    my_heap.printUsage();
 }
 
 test "ObjPool: alloc after free" {
@@ -313,8 +304,6 @@ test "ObjPool: alloc after free" {
 
     item_ptr.meow = 1;
     item_ptr.sh = 2;
-    my_heap.printUsage();
-
     my_heap.freeOne(item_ptr);
 
     const item_ptr2 = try my_heap.allocOne();
@@ -322,10 +311,8 @@ test "ObjPool: alloc after free" {
     item_ptr2.sh = 2;
 
     try std.testing.expectEqual(@as(meow, .{ .meow = 1, .sh = 2 }), item_ptr2.*);
-    my_heap.printUsage();
 
     my_heap.freeOne(item_ptr2);
-    my_heap.printUsage();
 }
 
 test "ObjPool: basic alloc of size = usize " {
@@ -370,12 +357,8 @@ test "ObjPool: LIFO allocation order after free" {
     c.id = 30;
     c.weight = 3.5;
 
-    my_heap.printUsage();
-
     my_heap.freeOne(b);
     my_heap.freeOne(a);
-
-    my_heap.printUsage();
 
     const first_reallocated = try my_heap.allocOne();
     const second_reallocated = try my_heap.allocOne();
@@ -392,8 +375,6 @@ test "ObjPool: LIFO allocation order after free" {
     my_heap.freeOne(c);
     my_heap.freeOne(first_reallocated);
     my_heap.freeOne(second_reallocated);
-
-    my_heap.printUsage();
 }
 
 test "ObjPool: interior slots are misaligned for the intrusive free-list pointer " {

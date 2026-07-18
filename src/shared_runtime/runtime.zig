@@ -193,3 +193,10 @@ pub fn deinit(self: *Self) void {
     self.gpa.destroy(self._arena);
     self.importer.deinit(self.gpa);
 }
+
+test {
+    _ = .{
+        Memory,
+        Types,
+    };
+}
