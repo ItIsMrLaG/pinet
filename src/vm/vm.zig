@@ -36,17 +36,23 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
     try config.isValid();
 
     const core: []Core = try runtime.gpa.alloc(Core, config.cores_num);
+    errdefer runtime.gpa.free(core);
 
     // TODO:(kogora): multithread version
     std.debug.assert(core.len == 1);
 
-    core[0] = try Core.init(runtime, config.heap_size);
+    var initialized: usize = 0;
+    errdefer for (core[0..initialized]) |*c| c.deinit();
+
+    while (initialized < config.cores_num) : (initialized += 1) {
+        core[initialized] = try Core.init(runtime, config.heap_size);
+    }
 
     return .{ .cores = core, .runtime = runtime, .config = config };
 }
 
 pub fn deinit(self: *Self) void {
-    self.cores[0].deinit();
+    for (self.cores) |*c| c.deinit();
     self.runtime.gpa.free(self.cores);
 }
 
