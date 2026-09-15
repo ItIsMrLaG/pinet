@@ -20,7 +20,8 @@ const Printing = @import("printing");
 const BuildConfig = @import("config");
 
 pub const Core = @import("core.zig");
-pub const CoreCommon = @import("core_common.zig");
+pub const CoreMasterCtrl = @import("core_master_ctrl.zig");
+pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
 pub const Builtin = @import("builtin.zig");
 pub const Interaction = @import("interactions.zig");
 pub const Importer = @import("importer.zig");
@@ -32,11 +33,18 @@ const Self = VM;
 
 const getUser = "getUser";
 
-cores: []Core,
-core_common: *CoreCommon,
-global_ctx: GlobalCtx,
 config: Config,
+
+global_ctx: GlobalCtx,
 runtime: *Runtime,
+
+master_ctrl: *CoreMasterCtrl,
+slave_ctrl: *CoreSlaveCtrl,
+
+vm_core: Core,
+cores: []Core,
+
+var available_core_id: usize = 0;
 
 pub const Config = struct {
     pub const Error = error{
@@ -150,6 +158,23 @@ pub const GlobalCtx = struct {
         };
     }
 
+    pub fn createVmLocal(self: GlobalCtx) !Core.LocalCtx {
+        const S = struct {
+            var exist: bool = false;
+        };
+
+        if (S.exist) {
+            return error.AccessDenied;
+        }
+
+        S.exist = true;
+        return .{
+            .agent_heap = self.agent_heap,
+            .name_heap = self.name_heap,
+            .equation_fetcher = self.equation_fetcher,
+        };
+    }
+
     pub fn destroyLocal(self: *GlobalCtx, local_ctx: Core.LocalCtx, gpa: std.mem.Allocator) void {
         _ = self;
         _ = local_ctx;
@@ -165,45 +190,108 @@ pub const GlobalCtx = struct {
     }
 };
 
+fn destroySlaveCores(
+    cores: []Core,
+    global_ctx: GlobalCtx,
+    runtime: *Runtime,
+) void {
+    for (cores) |*c| global_ctx.destroyLocal(c.local_ctx, runtime.gpa);
+    runtime.gpa.free(cores);
+}
+
+fn createSlaveCores(
+    runtime: *Runtime,
+    global_ctx: GlobalCtx,
+    core_num: usize,
+    slave_ctrl: *CoreSlaveCtrl,
+) ![]Core {
+    const cores: []Core = try runtime.gpa.alloc(Core, core_num);
+    errdefer runtime.gpa.free(cores);
+
+    const start_id = available_core_id;
+    for (cores, start_id..) |*c, core_id| {
+        c.* = Core.init(
+            Core.CoreId{ .id = @intCast(core_id) },
+            Core.CoreMode.singleThread,
+            runtime,
+            Core.CoreCtrl{ .slave = slave_ctrl },
+            global_ctx.createLocal(runtime.gpa),
+        );
+
+        available_core_id += 1;
+    }
+
+    return cores;
+}
+
+pub fn deinit(self: *Self) void {
+    destroySlaveCores(self.cores, self.global_ctx, self.runtime);
+    self.global_ctx.deinit(self.runtime.gpa);
+    self.runtime.gpa.destroy(self.slave_ctrl);
+}
+
 pub fn init(runtime: *Runtime, config: Config) !Self {
     try config.isValid();
 
-    // TODO:(kogora): multithread version
-    std.debug.assert(config.cores_num == 1);
+    const mode = if (config.cores_num == 1) {
+        Core.CoreMode.singleThread;
+    } else {
+        Core.CoreMode.multiThread;
+    };
 
-    const core_common = try runtime.gpa.create(CoreCommon);
-    core_common.* = CoreCommon.init();
-    errdefer runtime.gpa.destroy(core_common);
+    // TODO:(kogora): multithread version
+    std.debug.assert(mode == Core.CoreMode.singleThread);
+
+    var vm_core: Core = undefined;
+    var master_ctrl: *CoreMasterCtrl = undefined;
+
+    var slave_ctrl: *CoreSlaveCtrl = undefined;
+    var cores: []Core = undefined;
 
     var global_ctx = try GlobalCtx.init(runtime, config);
     errdefer global_ctx.deinit(runtime.gpa);
 
-    const cores: []Core = try runtime.gpa.alloc(Core, config.cores_num);
-    errdefer runtime.gpa.free(cores);
+    switch (mode) {
+        .singleThread => {
+            vm_core = Core.init{
+                .core_id = Core.CoreId{ .master = void },
+                .mode = mode,
+                .runtime = runtime,
+                .core_ctrl = null,
+                .local_ctx = global_ctx.createVmLocal(),
+            };
+        },
+        .multiThread => {
+            master_ctrl = try runtime.gpa.create(CoreMasterCtrl);
+            errdefer runtime.gpa.destroy(master_ctrl);
+            master_ctrl.* = CoreMasterCtrl.init();
 
-    for (cores, 0..) |*c, core_id| {
-        c.* = Core.init(
-            @intCast(core_id),
-            runtime,
-            core_common,
-            global_ctx.createLocal(runtime.gpa),
-        );
+            vm_core = Core.init{
+                .core_id = Core.CoreId{ .master = void },
+                .mode = mode,
+                .runtime = runtime,
+                .core_ctrl = Core.CoreCtrl{ .master = master_ctrl },
+                .local_ctx = global_ctx.createVmLocal(),
+            };
+
+            slave_ctrl = try runtime.gpa.create(CoreSlaveCtrl);
+            errdefer runtime.gpa.destroy(slave_ctrl);
+            slave_ctrl.* = CoreSlaveCtrl.init();
+
+            cores = try createSlaveCores(runtime, global_ctx, config.cores_num, slave_ctrl);
+            errdefer destroySlaveCores(cores, global_ctx, runtime);
+        },
     }
 
     return .{
+        .vm_core = vm_core,
         .cores = cores,
-        .core_common = core_common,
+        .master_ctrl = master_ctrl,
+        .slave_ctrl = slave_ctrl,
         .global_ctx = global_ctx,
         .runtime = runtime,
         .config = config,
     };
-}
-
-pub fn deinit(self: *Self) void {
-    for (self.cores) |*c| self.global_ctx.destroyLocal(c.local_ctx, self.runtime.gpa);
-    self.runtime.gpa.free(self.cores);
-    self.global_ctx.deinit(self.runtime.gpa);
-    self.runtime.gpa.destroy(self.core_common);
 }
 
 fn objToValueNumber(agent_heap: Memory.Heap(Agent), num: AST.Object) !Value {
@@ -357,6 +445,7 @@ inline fn ruleStmt(self: *Self, rule: AST.Rule) !void {
     }
 }
 
+// FIX:(kogora) work is here
 inline fn prepareActivePair(self: *Self, ap: AST.ActivePair) !void {
     const lhs = try objToValue(self.runtime, self.global_ctx.agent_heap, self.global_ctx.name_heap, ap.lhs.val);
     const rhs = try objToValue(self.runtime, self.global_ctx.agent_heap, self.global_ctx.name_heap, ap.rhs.val);
