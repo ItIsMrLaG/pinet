@@ -17,7 +17,8 @@ const Compilation = @import("compilation");
 const Instruction = Compilation.Instruction;
 const Condition = Compilation.Condition;
 
-const CoreCommon = @import("core_common.zig");
+const CoreMasterCtrl = @import("core_master_ctrl.zig");
+const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
 const Normalize = @import("normalize.zig");
 
 const Agent = Types.Agent;
@@ -30,6 +31,40 @@ const Core = @This();
 const Self = Core;
 
 const number_of_registers = 256;
+
+id: CoreId,
+mode: CoreMode,
+
+// Execution only ever reads Runtime (rule/arity/id lookups) - everything
+// that mutates it (rule registration, imports, associated_names) lives in
+// VM's statement handling now, so this can be const.
+runtime: *const Runtime,
+
+core_ctrl: ?CoreCtrl,
+local_ctx: LocalCtx,
+
+registers: [number_of_registers]Value,
+condition_registers: [number_of_registers]Condition.Register.CondValue,
+
+pub const CoreMode = enum { singleThread, multiThread };
+pub const CoreRole = enum { master, slave };
+
+pub const CoreRc = enum(u8) {
+    /// The core finished execution normally.
+    finishRc = 0,
+    /// The core was stopped for some reason.
+    stopRc,
+};
+
+pub const CoreId = union(CoreRole) {
+    master: void,
+    slave: u32,
+};
+
+pub const CoreCtrl = union(CoreRole) {
+    master: *CoreMasterCtrl,
+    slave: *CoreSlaveCtrl,
+};
 
 /// Per-core state - the heap and fetcher a given Core exclusively works
 /// with, as opposed to CoreCommon which every Core shares.
@@ -67,18 +102,6 @@ pub const LocalCtx = struct {
     }
 };
 
-id: u32,
-
-// Execution only ever reads Runtime (rule/arity/id lookups) - everything
-// that mutates it (rule registration, imports, associated_names) lives in
-// VM's statement handling now, so this can be const.
-runtime: *const Runtime,
-core_common: *CoreCommon,
-local_ctx: LocalCtx,
-
-registers: [number_of_registers]Value,
-condition_registers: [number_of_registers]Condition.Register.CondValue,
-
 pub fn createEmptyName(c: *Core) !*Name {
     const name = try c.local_ctx.allocOneName();
     name.port = null;
@@ -103,15 +126,17 @@ pub fn createNumberAgent(c: *Core, num: Types.Special) !*Agent {
 /// lets it hand out per-thread heaps in the multithreaded setup. Core just
 /// holds onto what it's given.
 pub fn init(
-    core_id: u32,
+    core_id: CoreId,
+    mode: CoreMode,
     runtime: *const Runtime,
-    core_common: *CoreCommon,
+    core_ctrl: ?CoreCtrl,
     local_ctx: LocalCtx,
 ) Self {
     return .{
         .id = core_id,
+        .mode = mode,
         .runtime = runtime,
-        .core_common = core_common,
+        .core_ctrl = core_ctrl,
         .local_ctx = local_ctx,
 
         // They are not meant to be used when undefiend by the design of compilation.
@@ -174,8 +199,38 @@ pub fn execInstructions(
     }
 }
 
-pub fn runEquations(c: *Core) !void {
+inline fn runEquationsSingleThread(c: *Core) !CoreRc {
     while (c.local_ctx.fetchEquation()) |eq| {
         try Interaction.evalEquation(c, eq);
     }
+
+    return .finishRc;
+}
+
+inline fn runEquationsMaster(c: *Core) !CoreRc {
+    // TODO:(kogora) add core_ctrl usage (as CoreMasterCtrl)
+    while (c.local_ctx.fetchEquation()) |eq| {
+        try Interaction.evalEquation(c, eq);
+    }
+
+    return .finishRc;
+}
+
+inline fn runEquationsSlave(c: *Core) !CoreRc {
+    // TODO:(kogora) add core_ctrl usage (as CoreSlaveCtrl)
+    while (c.local_ctx.fetchEquation()) |eq| {
+        try Interaction.evalEquation(c, eq);
+    }
+
+    return .finishRc;
+}
+
+pub fn runEquations(c: *Core) !CoreRc {
+    return switch (c.mode) {
+        .singleThread => try runEquationsSingleThread(c),
+        .multiThread => switch (c.id) {
+            .master => try runEquationsMaster(c),
+            .slave => try runEquationsSlave(c),
+        },
+    };
 }

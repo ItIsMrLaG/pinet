@@ -12,6 +12,7 @@ const help =
     \\-t, --threads <usize>          Specify number of threads to be run on (this does not work yet).
     \\-m, --heap-size <usize>        Specify the initial size of the heap. Default: 1024
     \\-f, --filepath <str>           Specify file to be interpreted. Default: ./tests/list_sorting.in
+    \\-w, --warmup                   In multiThread mode, have the master core take a first pass at reducing equations before handing off to the worker cores.
     \\
 ;
 const params = clap.parseParamsComptime(help);
@@ -88,6 +89,7 @@ pub fn main(init: std.process.Init) !void {
     const vm_cfg: VM.Config = .{
         .heap_size = res.args.@"heap-size" orelse DEFAULT_HEAP_SIZE,
         .cores_num = DEFAULT_CORES_NUM,
+        .warmup = res.args.warmup != 0,
     };
 
     var vm = try VM.init(&runtime, vm_cfg);
