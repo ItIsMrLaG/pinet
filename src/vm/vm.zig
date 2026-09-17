@@ -113,6 +113,8 @@ pub const GlobalCtx = struct {
             const concrete: *Concrete = @ptrCast(@alignCast(heap.ptr));
             return concrete.getUser();
         }
+
+        // TODO:(kogora) mb should be unreachable
         return heap;
     }
 
@@ -310,58 +312,51 @@ fn objToValueNumber(agent_heap: Memory.Heap(Agent), num: AST.Object) !Value {
     return .{ .agent = agent };
 }
 
-fn objToValueAgent(
-    runtime: *Runtime,
-    agent_heap: Memory.Heap(Agent),
-    name_heap: Memory.Heap(Name),
-    obj: AST.Object,
-) anyerror!Value {
+fn objToValueAgent(self: *Self, obj: AST.Object) anyerror!Value {
     const portlist = obj.portlist.?;
-    const agent_id = try runtime.agent_id_map.get(obj.name);
-    const arity = try runtime.agent_arities.get(agent_id, portlist.len);
-    const agent = try agent_heap.allocOne();
+    const agent_id = try self.runtime.agent_id_map.get(obj.name);
+    const arity = try self.runtime.agent_arities.get(agent_id, portlist.len);
+    const agent = try self.global_ctx.agent_heap.allocOne();
 
     agent.* = .{ .id = agent_id, .ports = @splat(null) };
     {
         var idx: u8 = 0;
         while (idx < arity) : (idx += 1) {
             // Temporary names are needed
-            agent.ports[idx] = try objToValue(runtime, agent_heap, name_heap, portlist[idx].val);
+            agent.ports[idx] = try self.objToValue(portlist[idx].val);
         }
     }
 
     return Value{ .agent = agent };
 }
 
-fn objToValueName(runtime: *Runtime, name_heap: Memory.Heap(Name), obj: AST.Object) !Value {
-    const name = try name_heap.allocOne();
+fn objToValueName(self: *Self, obj: AST.Object) !Value {
+    const name = try self.global_ctx.name_heap.allocOne();
 
     name.* = .{ .port = null };
-    try runtime.associated_names.put(obj.name, name);
+    try self.runtime.associated_names.put(obj.name, name);
 
     return .{ .name = name };
 }
 
 fn objToValue(
-    runtime: *Runtime,
-    agent_heap: Memory.Heap(Agent),
-    name_heap: Memory.Heap(Name),
+    self: *Self,
     obj: AST.Object,
 ) anyerror!Value {
     if (obj.isNumber()) {
         const num = obj.portlist.?[0].val;
-        return objToValueNumber(agent_heap, num);
+        return objToValueNumber(self.global_ctx.agent_heap, num);
     }
 
     if (obj.portlist != null) {
-        return objToValueAgent(runtime, agent_heap, name_heap, obj);
+        return self.objToValueAgent(obj);
     }
 
-    if (runtime.associated_names.getPtr(obj.name)) |maybe_name| {
+    if (self.runtime.associated_names.getPtr(obj.name)) |maybe_name| {
         if (maybe_name.*) |name| {
             maybe_name.* = null;
             if (name.port) |port| {
-                defer name_heap.freeOne(name);
+                defer self.global_ctx.name_heap.freeOne(name);
 
                 return port;
             } else {
@@ -372,7 +367,7 @@ fn objToValue(
         }
     }
 
-    return objToValueName(runtime, name_heap, obj);
+    return self.objToValueName(obj);
 }
 
 inline fn printStmt(self: *Self, name_to_print: AST.Name) !void {
@@ -451,21 +446,11 @@ inline fn ruleStmt(self: *Self, rule: AST.Rule) !void {
 }
 
 inline fn prepareActivePair(self: *Self, ap: AST.ActivePair) !void {
-    const lhs = try objToValue(
-        self.runtime,
-        self.vm_core.local_ctx.agent_heap,
-        self.vm_core.local_ctx.name_heap,
-        ap.lhs.val,
-    );
-    const rhs = try objToValue(
-        self.runtime,
-        self.vm_core.local_ctx.agent_heap,
-        self.vm_core.local_ctx.name_heap,
-        ap.rhs.val,
-    );
+    const lhs = try self.objToValue(ap.lhs.val);
+    const rhs = try self.objToValue(ap.rhs.val);
     const eq = EquationUnnormalized{ .lhs = lhs, .rhs = rhs };
 
-    try self.vm_core.local_ctx.pushEquation(eq);
+    try self.global_ctx.pushEquation(eq);
 }
 
 inline fn execActivePairVmCore(self: *Self) !void {

@@ -48,9 +48,12 @@ condition_registers: [number_of_registers]Condition.Register.CondValue,
 
 pub const CoreMode = enum { singleThread, multiThread };
 pub const CoreRole = enum { master, slave };
+
 pub const CoreRc = enum(u8) {
-    finishRc = 0, // core normally finished execution
-    stopRc, // core was stoped for some reason
+    /// The core finished execution normally.
+    finishRc = 0,
+    /// The core was stopped for some reason.
+    stopRc,
 };
 
 pub const CoreId = union(CoreRole) {
