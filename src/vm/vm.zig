@@ -16,10 +16,18 @@ const Name = Types.Name;
 const Special = Types.Special;
 const EquationUnnormalized = Types.EquationUnnormalized;
 
-pub const Builtin = @import("builtin.zig");
 pub const Core = @import("core.zig");
+const CoreMode = @import("core_types.zig").CoreMode;
+const CoreId = @import("core_types.zig").CoreId;
+const CoreAction = @import("core_types.zig").CoreAction;
+const CoreRc = @import("core_types.zig").CoreRc;
+const CoreRole = @import("core_types.zig").CoreRole;
+
 pub const CoreMasterCtrl = @import("core_master_ctrl.zig");
 pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
+pub const CoreSlaveCh = @import("core_slave_channel.zig");
+
+pub const Builtin = @import("builtin.zig");
 pub const Importer = @import("importer.zig");
 pub const Interaction = @import("interactions.zig");
 const Normalize = @import("normalize.zig");
@@ -36,7 +44,7 @@ global_ctx: GlobalCtx,
 runtime: *Runtime,
 
 master_ctrl: ?*CoreMasterCtrl,
-slave_ctrl: ?*CoreSlaveCtrl,
+slave_ch: ?*CoreSlaveCtrl,
 
 vm_core: Core,
 cores: []Core,
@@ -211,18 +219,20 @@ fn createSlaveCores(
     runtime: *Runtime,
     global_ctx: GlobalCtx,
     core_num: usize,
-    slave_ctrl: *CoreSlaveCtrl,
+    slave_ch: *CoreSlaveCh,
 ) ![]Core {
     const cores: []Core = try runtime.gpa.alloc(Core, core_num);
     errdefer runtime.gpa.free(cores);
 
     const start_id = available_core_id;
+    const slave_ctlr = CoreSlaveCtrl.init(slave_ch);
+
     for (cores, start_id..) |*c, core_id| {
         c.* = Core.init(
-            Core.CoreId{ .slave = @intCast(core_id) },
-            Core.CoreMode.singleThread,
+            CoreId{ .slave = @intCast(core_id) },
+            CoreMode.singleThread,
             runtime,
-            Core.CoreCtrl{ .slave = slave_ctrl },
+            Core.CoreCtrl{ .slave = slave_ctlr },
             global_ctx.createLocal(runtime.gpa),
         );
 
@@ -235,22 +245,22 @@ fn createSlaveCores(
 pub fn deinit(self: *Self) void {
     destroySlaveCores(self.cores, &self.global_ctx, self.runtime);
     self.global_ctx.deinit(self.runtime.gpa);
-    if (self.slave_ctrl) |slave_ctrl| self.runtime.gpa.destroy(slave_ctrl);
+    if (self.slave_ch) |slave_ctrl| self.runtime.gpa.destroy(slave_ctrl);
     if (self.master_ctrl) |master_ctrl| self.runtime.gpa.destroy(master_ctrl);
 }
 
 pub fn init(runtime: *Runtime, config: Config) !Self {
     try config.isValid();
 
-    const mode: Core.CoreMode = if (config.cores_num == 1) .singleThread else .multiThread;
+    const mode: CoreMode = if (config.cores_num == 1) .singleThread else .multiThread;
 
     // TODO:(kogora): multithread version
-    std.debug.assert(mode == Core.CoreMode.singleThread);
+    std.debug.assert(mode == CoreMode.singleThread);
 
     var vm_core: Core = undefined;
     var master_ctrl: ?*CoreMasterCtrl = null;
 
-    var slave_ctrl: ?*CoreSlaveCtrl = null;
+    var slave_ch: ?*CoreSlaveCh = null;
     var cores: []Core = &.{};
 
     var global_ctx = try GlobalCtx.init(runtime, config);
@@ -259,7 +269,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
     switch (mode) {
         .singleThread => {
             vm_core = Core.init(
-                Core.CoreId{ .master = {} },
+                CoreId{ .master = {} },
                 mode,
                 runtime,
                 null,
@@ -273,19 +283,19 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
             master_ctrl = created_master_ctrl;
 
             vm_core = Core.init(
-                Core.CoreId{ .master = {} },
+                CoreId{ .master = {} },
                 mode,
                 runtime,
                 Core.CoreCtrl{ .master = created_master_ctrl },
                 try global_ctx.createVmLocal(),
             );
 
-            const created_slave_ctrl = try runtime.gpa.create(CoreSlaveCtrl);
-            errdefer runtime.gpa.destroy(created_slave_ctrl);
-            created_slave_ctrl.* = CoreSlaveCtrl.init();
-            slave_ctrl = created_slave_ctrl;
+            const new_slave_ch = try runtime.gpa.create(CoreSlaveCh);
+            errdefer runtime.gpa.destroy(new_slave_ch);
+            new_slave_ch.* = CoreSlaveCh.init();
+            slave_ch = new_slave_ch;
 
-            cores = try createSlaveCores(runtime, global_ctx, config.cores_num, created_slave_ctrl);
+            cores = try createSlaveCores(runtime, global_ctx, config.cores_num, new_slave_ch);
             errdefer destroySlaveCores(cores, &global_ctx, runtime);
         },
     }
@@ -294,7 +304,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
         .vm_core = vm_core,
         .cores = cores,
         .master_ctrl = master_ctrl,
-        .slave_ctrl = slave_ctrl,
+        .slave_ch = slave_ch,
         .global_ctx = global_ctx,
         .runtime = runtime,
         .config = config,
@@ -460,7 +470,7 @@ inline fn execActivePairVmCore(self: *Self) !void {
 inline fn execActivePairMultiCores(self: *Self) !void {
     if (self.config.warmup) {
         const rc = try self.vm_core.runEquations();
-        if (rc == Core.CoreRc.finishRc) {
+        if (rc == CoreRc.finishRc) {
             return;
         }
 
@@ -471,14 +481,14 @@ inline fn execActivePairMultiCores(self: *Self) !void {
     _ = try self.cores[0].runEquations();
 }
 
-inline fn execActivePairMode(self: *Self, mode: Core.CoreMode) !void {
+inline fn execActivePairMode(self: *Self, mode: CoreMode) !void {
     switch (mode) {
         .singleThread => try self.execActivePairVmCore(),
         .multiThread => try self.execActivePairMultiCores(),
     }
 }
 
-inline fn execActivePair(self: *Self, mode: Core.CoreMode) !void {
+inline fn execActivePair(self: *Self, mode: CoreMode) !void {
     if (BuildConfig.debug_printing.benchmark) {
         const start = std.Io.Clock.awake.now(self.runtime.io);
         try self.execActivePairMode(mode);

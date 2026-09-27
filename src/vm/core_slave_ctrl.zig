@@ -1,31 +1,55 @@
-//! Shared state every Core (worker) can update without taking any lock -
-//! specifically, whether it is currently busy reducing an equation.
+//! TODO:(kogora)
 const std = @import("std");
+pub const CoreSlaveCh = @import("core_slave_channel.zig");
+const CoreAction = @import("core_types.zig").CoreAction;
 
 const Self = @This();
 
-/// Caps concurrent cores at 64 - one bit each, fits in one word.
-pub const max_cores = 64;
+state: State,
+vm_ch: *CoreSlaveCh,
 
-busy_mask: std.atomic.Value(u64),
-
-pub fn init() Self {
-    return .{ .busy_mask = std.atomic.Value(u64).init(0) };
+pub fn init(ch: *CoreSlaveCh) Self {
+    return .{ .self = State.newborn, .vm_ch = ch };
 }
 
-/// Marks core_id as currently reducing an equation.
-pub fn setBit(self: *Self, core_id: u32) void {
-    std.debug.assert(core_id < max_cores);
-    _ = self.busy_mask.fetchOr(@as(u64, 1) << @intCast(core_id), .release);
-}
+const State = enum(u64) {
+    newborn,
+    applicant,
+    worker,
+    goner,
+    corpse,
 
-/// Marks core_id as idle - it found nothing left to reduce.
-pub fn clearBit(self: *Self, core_id: u32) void {
-    std.debug.assert(core_id < max_cores);
-    _ = self.busy_mask.fetchAnd(~(@as(u64, 1) << @intCast(core_id)), .release);
-}
+    pub fn switchState(
+        curState: State,
+        needDie: bool,
+        needWork: bool,
+        wantWait: bool,
+    ) !State {
+        if (needDie) {
+            return switch (curState) {
+                .applicant, .worker => .goner,
+                else => error.Unexpected,
+            };
+        }
 
-/// Raw snapshot of which cores are currently busy.
-pub fn read(self: *const Self) u64 {
-    return self.busy_mask.load(.acquire);
-}
+        if (needWork) {
+            return switch (curState) {
+                .applicant, .worker => .worker,
+                else => error.Unexpected,
+            };
+        }
+
+        if (wantWait) {
+            return switch (curState) {
+                .applicant, .worker => .applicant,
+                else => error.Unexpected,
+            };
+        }
+
+        return switch (curState) {
+            .newborn => .applicant,
+            .goner => .corpse,
+            else => curState,
+        };
+    }
+};

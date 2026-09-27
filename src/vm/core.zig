@@ -21,6 +21,12 @@ const CoreMasterCtrl = @import("core_master_ctrl.zig");
 const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
 const Normalize = @import("normalize.zig");
 
+const CoreMode = @import("core_types.zig").CoreMode;
+const CoreId = @import("core_types.zig").CoreId;
+const CoreAction = @import("core_types.zig").CoreAction;
+const CoreRc = @import("core_types.zig").CoreRc;
+const CoreRole = @import("core_types.zig").CoreRole;
+
 const Agent = Types.Agent;
 const Value = Types.Value;
 const Name = Types.Name;
@@ -45,21 +51,6 @@ local_ctx: LocalCtx,
 
 registers: [number_of_registers]Value,
 condition_registers: [number_of_registers]Condition.Register.CondValue,
-
-pub const CoreMode = enum { singleThread, multiThread };
-pub const CoreRole = enum { master, slave };
-
-pub const CoreRc = enum(u8) {
-    /// The core finished execution normally.
-    finishRc = 0,
-    /// The core was stopped for some reason.
-    stopRc,
-};
-
-pub const CoreId = union(CoreRole) {
-    master: void,
-    slave: u32,
-};
 
 pub const CoreCtrl = union(CoreRole) {
     master: *CoreMasterCtrl,
@@ -200,6 +191,7 @@ pub fn execInstructions(
 }
 
 inline fn runEquationsSingleThread(c: *Core) !CoreRc {
+    // NOTE:(kogora) dont use CoreCtrl at all
     while (c.local_ctx.fetchEquation()) |eq| {
         try Interaction.evalEquation(c, eq);
     }
