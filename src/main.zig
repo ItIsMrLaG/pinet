@@ -95,6 +95,9 @@ pub fn main(init: std.process.Init) !void {
     var vm = try VM.init(&runtime, vm_cfg);
     defer vm.deinit();
 
+    try vm.startCores();
+    defer vm.stopCores();
+
     vm.runProgram(program) catch |err| {
         if (err == error.CompilationError or err == error.ErrorDuringParsing) {
             std.process.exit(1);
