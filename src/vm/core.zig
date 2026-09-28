@@ -228,7 +228,7 @@ inline fn runEquationsSlave(c: *Core) !void {
         var cur_state = ctrl.getStatePriv();
 
         if (cur_state != .goner and ctrl.receiveSig() != null) {
-            cur_state = cur_state.sigNextState(ctrl.sig.?);
+            cur_state = cur_state.sigNextState(ctrl.sig.?).?;
         }
 
         switch (cur_state) {
@@ -258,15 +258,15 @@ inline fn runEquationsSlave(c: *Core) !void {
             .applicant => {
                 if (ctrl.sig != null) {
                     std.debug.assert(ctrl.sig.? == .stop_sig);
-                    ctrl.responsSig();
+                    try ctrl.responsSig();
 
-                    std.debug.print("core-{} is an applicant (from sig)", c.id);
+                    std.debug.print("core-{} is an applicant (from sig)", .{c.id});
                 }
 
                 noop();
             },
             .goner => {
-                std.debug.print("core-{} is a goner", c.id);
+                std.debug.print("core-{} is a goner", .{c.id});
                 break :live;
             },
             .corpse, .newborn => unreachable,
@@ -281,7 +281,7 @@ inline fn runEquationsSlave(c: *Core) !void {
 
     if (ctrl.sig != null) {
         std.debug.assert(ctrl.sig.? == .kill_sig);
-        ctrl.responsSig();
+        try ctrl.responsSig();
     }
 }
 

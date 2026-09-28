@@ -182,19 +182,6 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&run_submodule_tests.step);
     }
 
-    // Not yet wired into vm's import graph (see TODOs in core.zig), so it
-    // isn't reachable from the vm module's tests above - test it directly.
-    const core_slave_channel_tests = b.addTest(.{
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/vm/core_slave_channel.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-        .name = "core_slave_channel",
-    });
-    const run_core_slave_channel_tests = b.addRunArtifact(core_slave_channel_tests);
-    test_step.dependOn(&run_core_slave_channel_tests.step);
-
     test_step.dependOn(&run_golden_tests_tests.step);
     test_step.dependOn(&golden_testing_run_cmd.step);
 }

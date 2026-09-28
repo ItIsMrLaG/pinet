@@ -40,8 +40,8 @@ pub inline fn responsSig(self: *Self) !void {
     self.sig = null;
 }
 
-pub inline fn sendStopSig(self: *Self, sig: CtrlSig) void {
-    self.vm_ch.trySetFlag(sig);
+pub inline fn sendSig(self: *Self, sig: CtrlSig) void {
+    _ = self.vm_ch.trySetFlag(sig);
 }
 
 pub inline fn putState(self: *Self, state: State) void {

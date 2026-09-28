@@ -49,7 +49,7 @@ master_ctrl: ?*CoreMasterCtrl,
 vm_core: Core,
 slots: ?[]SlaveSlot,
 
-var available_core_id: usize = 0;
+var available_core_id: u32 = 0;
 
 pub const Config = struct {
     pub const Error = error{
@@ -265,8 +265,10 @@ fn slaveSlotsInit(
 }
 
 pub fn deinit(self: *Self) void {
-    slaveSlotsDeinit(self.slots, &self.global_ctx, self.runtime);
-    self.runtime.gpa.free(self.slots);
+    if (self.slots) |slots| {
+        slaveSlotsDeinit(slots, &self.global_ctx, self.runtime);
+        self.runtime.gpa.free(slots);
+    }
 
     self.global_ctx.deinit(self.runtime.gpa);
 
@@ -284,7 +286,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
     var vm_core: Core = undefined;
 
     var master_ctrl: ?*CoreMasterCtrl = null;
-    const slots: ?[]SlaveSlot = null;
+    var slots: ?[]SlaveSlot = null;
 
     var global_ctx = try GlobalCtx.init(runtime, config);
     errdefer global_ctx.deinit(runtime.gpa);
@@ -314,9 +316,9 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
             );
 
             slots = try runtime.gpa.alloc(SlaveSlot, config.cores_num);
-            errdefer runtime.gpa.free(slots);
+            errdefer runtime.gpa.free(slots.?);
 
-            try slaveSlotsInit(slots, runtime, global_ctx, config.cores_num);
+            try slaveSlotsInit(slots.?, runtime, global_ctx);
         },
     }
 
@@ -494,7 +496,7 @@ inline fn execActivePairMultiCores(self: *Self) !void {
     }
 
     // TODO:(kogora): multithread version
-    _ = try self.slots[0].runEquations();
+    try self.slots.?[0].core.runEquations();
 }
 
 inline fn execActivePairMode(self: *Self, mode: CoreMode) !void {

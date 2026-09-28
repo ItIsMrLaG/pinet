@@ -3,7 +3,7 @@
 //! wanting several independent channels hold an array of `FlagCh(T)`.
 const std = @import("std");
 
-const CtrlSig = @import("core_types.zig").CtrlSig;
+pub const CtrlSig = @import("core_types.zig").CtrlSig;
 
 pub const CtrlCh = FlagCh(CtrlSig);
 
