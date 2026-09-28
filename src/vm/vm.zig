@@ -16,10 +16,21 @@ const Name = Types.Name;
 const Special = Types.Special;
 const EquationUnnormalized = Types.EquationUnnormalized;
 
-pub const Builtin = @import("builtin.zig");
 pub const Core = @import("core.zig");
+const CoreMode = @import("core_types.zig").CoreMode;
+const CoreId = @import("core_types.zig").CoreId;
+const CoreAction = @import("core_types.zig").CoreAction;
+const CoreRc = @import("core_types.zig").CoreRc;
+const CoreRole = @import("core_types.zig").CoreRole;
+
 pub const CoreMasterCtrl = @import("core_master_ctrl.zig");
 pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
+
+// FIX:(kogora)
+pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
+pub const FlagChType = @import("flag_channel.zig").FlagChType;
+
+pub const Builtin = @import("builtin.zig");
 pub const Importer = @import("importer.zig");
 pub const Interaction = @import("interactions.zig");
 const Normalize = @import("normalize.zig");
@@ -36,10 +47,9 @@ global_ctx: GlobalCtx,
 runtime: *Runtime,
 
 master_ctrl: ?*CoreMasterCtrl,
-slave_ctrl: ?*CoreSlaveCtrl,
 
 vm_core: Core,
-cores: []Core,
+slots: ?[]SlaveSlot,
 
 var available_core_id: usize = 0;
 
@@ -58,6 +68,37 @@ pub const Config = struct {
         if (cfg.cores_num != 1) {
             return Error.NotSupported;
         }
+    }
+};
+
+pub const SlaveSlot = struct {
+    ch: CtrlCh.Master,
+    ctrl: CoreSlaveCtrl,
+
+    core: Core,
+
+    pub fn init(
+        self: *SlaveSlot,
+        mode: CoreMode,
+        raw_id: u32,
+        ch: *CtrlCh,
+        runtime: *Runtime,
+        ctx: Core.LocalCtx,
+    ) void {
+        const master_ch = ch.getMaster();
+        const slave_ch = ch.getSlave();
+
+        self.* = .{
+            .ch = master_ch,
+            .ctrl = CoreSlaveCtrl.init(slave_ch),
+            .core = Core.init(
+                CoreId{ .slave = raw_id },
+                mode,
+                runtime,
+                Core.CoreCtrl{ .slave = &self.ctrl },
+                ctx,
+            ),
+        };
     }
 };
 
@@ -198,60 +239,54 @@ pub const GlobalCtx = struct {
     }
 };
 
-fn destroySlaveCores(
-    cores: []Core,
+fn slaveSlotsDeinit(
+    slots: []SlaveSlot,
     global_ctx: *GlobalCtx,
     runtime: *Runtime,
 ) void {
-    for (cores) |*c| global_ctx.destroyLocal(c.local_ctx, runtime.gpa);
-    runtime.gpa.free(cores);
+    for (slots) |*slot| {
+        global_ctx.destroyLocal(slot.core.local_ctx, runtime.gpa);
+        slot.ch.ch.destroy(runtime.gpa);
+    }
 }
 
-fn createSlaveCores(
+fn slaveSlotsInit(
+    slots: []SlaveSlot,
     runtime: *Runtime,
     global_ctx: GlobalCtx,
-    core_num: usize,
-    slave_ctrl: *CoreSlaveCtrl,
-) ![]Core {
-    const cores: []Core = try runtime.gpa.alloc(Core, core_num);
-    errdefer runtime.gpa.free(cores);
+) !void {
+    for (slots) |*slot| {
+        // FIX:(kogora) if error => mem leak now
+        const ch = try CtrlCh.create(runtime.gpa);
+        const ctx = global_ctx.createLocal(runtime.gpa);
 
-    const start_id = available_core_id;
-    for (cores, start_id..) |*c, core_id| {
-        c.* = Core.init(
-            Core.CoreId{ .slave = @intCast(core_id) },
-            Core.CoreMode.singleThread,
-            runtime,
-            Core.CoreCtrl{ .slave = slave_ctrl },
-            global_ctx.createLocal(runtime.gpa),
-        );
+        slot.init(CoreMode.multiThread, available_core_id, ch, runtime, ctx);
 
         available_core_id += 1;
     }
-
-    return cores;
 }
 
 pub fn deinit(self: *Self) void {
-    destroySlaveCores(self.cores, &self.global_ctx, self.runtime);
+    slaveSlotsDeinit(self.slots, &self.global_ctx, self.runtime);
+    self.runtime.gpa.free(self.slots);
+
     self.global_ctx.deinit(self.runtime.gpa);
-    if (self.slave_ctrl) |slave_ctrl| self.runtime.gpa.destroy(slave_ctrl);
+
     if (self.master_ctrl) |master_ctrl| self.runtime.gpa.destroy(master_ctrl);
 }
 
 pub fn init(runtime: *Runtime, config: Config) !Self {
     try config.isValid();
 
-    const mode: Core.CoreMode = if (config.cores_num == 1) .singleThread else .multiThread;
+    const mode: CoreMode = if (config.cores_num == 1) .singleThread else .multiThread;
 
     // TODO:(kogora): multithread version
-    std.debug.assert(mode == Core.CoreMode.singleThread);
+    std.debug.assert(mode == CoreMode.singleThread);
 
     var vm_core: Core = undefined;
-    var master_ctrl: ?*CoreMasterCtrl = null;
 
-    var slave_ctrl: ?*CoreSlaveCtrl = null;
-    var cores: []Core = &.{};
+    var master_ctrl: ?*CoreMasterCtrl = null;
+    const slots: ?[]SlaveSlot = null;
 
     var global_ctx = try GlobalCtx.init(runtime, config);
     errdefer global_ctx.deinit(runtime.gpa);
@@ -259,7 +294,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
     switch (mode) {
         .singleThread => {
             vm_core = Core.init(
-                Core.CoreId{ .master = {} },
+                CoreId{ .master = {} },
                 mode,
                 runtime,
                 null,
@@ -273,28 +308,24 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
             master_ctrl = created_master_ctrl;
 
             vm_core = Core.init(
-                Core.CoreId{ .master = {} },
+                CoreId{ .master = {} },
                 mode,
                 runtime,
                 Core.CoreCtrl{ .master = created_master_ctrl },
                 try global_ctx.createVmLocal(),
             );
 
-            const created_slave_ctrl = try runtime.gpa.create(CoreSlaveCtrl);
-            errdefer runtime.gpa.destroy(created_slave_ctrl);
-            created_slave_ctrl.* = CoreSlaveCtrl.init();
-            slave_ctrl = created_slave_ctrl;
+            slots = try runtime.gpa.alloc(SlaveSlot, config.cores_num);
+            errdefer runtime.gpa.free(slots);
 
-            cores = try createSlaveCores(runtime, global_ctx, config.cores_num, created_slave_ctrl);
-            errdefer destroySlaveCores(cores, &global_ctx, runtime);
+            try slaveSlotsInit(slots, runtime, global_ctx, config.cores_num);
         },
     }
 
     return .{
         .vm_core = vm_core,
-        .cores = cores,
+        .slots = slots,
         .master_ctrl = master_ctrl,
-        .slave_ctrl = slave_ctrl,
         .global_ctx = global_ctx,
         .runtime = runtime,
         .config = config,
@@ -460,7 +491,7 @@ inline fn execActivePairVmCore(self: *Self) !void {
 inline fn execActivePairMultiCores(self: *Self) !void {
     if (self.config.warmup) {
         const rc = try self.vm_core.runEquations();
-        if (rc == Core.CoreRc.finishRc) {
+        if (rc == CoreRc.finishRc) {
             return;
         }
 
@@ -468,17 +499,17 @@ inline fn execActivePairMultiCores(self: *Self) !void {
     }
 
     // TODO:(kogora): multithread version
-    _ = try self.cores[0].runEquations();
+    _ = try self.slots[0].runEquations();
 }
 
-inline fn execActivePairMode(self: *Self, mode: Core.CoreMode) !void {
+inline fn execActivePairMode(self: *Self, mode: CoreMode) !void {
     switch (mode) {
         .singleThread => try self.execActivePairVmCore(),
         .multiThread => try self.execActivePairMultiCores(),
     }
 }
 
-inline fn execActivePair(self: *Self, mode: Core.CoreMode) !void {
+inline fn execActivePair(self: *Self, mode: CoreMode) !void {
     if (BuildConfig.debug_printing.benchmark) {
         const start = std.Io.Clock.awake.now(self.runtime.io);
         try self.execActivePairMode(mode);

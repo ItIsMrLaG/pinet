@@ -21,6 +21,15 @@ const CoreMasterCtrl = @import("core_master_ctrl.zig");
 const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
 const Normalize = @import("normalize.zig");
 
+const CoreMode = @import("core_types.zig").CoreMode;
+const CoreId = @import("core_types.zig").CoreId;
+const CoreAction = @import("core_types.zig").CoreAction;
+const CoreRc = @import("core_types.zig").CoreRc;
+const CoreRole = @import("core_types.zig").CoreRole;
+
+pub const FlagCh = @import("flag_channel.zig").FlagCh;
+pub const FlagChType = @import("flag_channel.zig").FlagChType;
+
 const Agent = Types.Agent;
 const Value = Types.Value;
 const Name = Types.Name;
@@ -46,25 +55,14 @@ local_ctx: LocalCtx,
 registers: [number_of_registers]Value,
 condition_registers: [number_of_registers]Condition.Register.CondValue,
 
-pub const CoreMode = enum { singleThread, multiThread };
-pub const CoreRole = enum { master, slave };
-
-pub const CoreRc = enum(u8) {
-    /// The core finished execution normally.
-    finishRc = 0,
-    /// The core was stopped for some reason.
-    stopRc,
-};
-
-pub const CoreId = union(CoreRole) {
-    master: void,
-    slave: u32,
-};
-
 pub const CoreCtrl = union(CoreRole) {
     master: *CoreMasterCtrl,
     slave: *CoreSlaveCtrl,
 };
+
+inline fn slaveCtrl(self: *Self) *CoreSlaveCtrl {
+    return self.core_ctrl.?.slave;
+}
 
 /// Per-core state - the heap and fetcher a given Core exclusively works
 /// with, as opposed to CoreCommon which every Core shares.
@@ -200,6 +198,7 @@ pub fn execInstructions(
 }
 
 inline fn runEquationsSingleThread(c: *Core) !CoreRc {
+    // NOTE:(kogora) dont use CoreCtrl at all
     while (c.local_ctx.fetchEquation()) |eq| {
         try Interaction.evalEquation(c, eq);
     }
@@ -214,6 +213,49 @@ inline fn runEquationsMaster(c: *Core) !CoreRc {
     }
 
     return .finishRc;
+}
+
+fn executor(c: *Core) void {
+    const ctrl = c.slaveCtrl();
+
+    { // Init work (newborn -> applicant)
+        const cur_state = ctrl.getState();
+        const new_state = cur_state.applicantState();
+        ctrl.putState(new_state);
+    }
+
+    live: while (true) {
+        var cur_state = ctrl.getStatePriv();
+
+        // if (ctrl.receiveSig()) |sig| {
+        //
+        // }
+
+        const action: CoreAction = undefined;
+        switch (action) {
+            .exec => {
+                if (c.local_ctx.fetchEquation()) |eq| {
+                    continue :live;
+                }
+
+                // FIX:(kogora) send sig to vm and go to noop
+            },
+            .noop => std.atomic.spinLoopHint(),
+            .ret => {
+                // FIX:(kogora)
+                break :live;
+            },
+        }
+    }
+
+    { // Deinit work (goner -> corpse)
+        const cur_state = ctrl.getState();
+        const new_state = cur_state.corpseState();
+        ctrl.putState(new_state);
+    }
+
+    // should be the last statement
+    ctrl.responsSig();
 }
 
 inline fn runEquationsSlave(c: *Core) !CoreRc {

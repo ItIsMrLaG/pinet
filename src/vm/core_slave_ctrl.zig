@@ -1,31 +1,103 @@
-//! Shared state every Core (worker) can update without taking any lock -
-//! specifically, whether it is currently busy reducing an equation.
+//! TODO:(kogora)
 const std = @import("std");
+pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
+pub const CtrlSig = @import("flag_channel.zig").CtrlSig;
+const CoreAction = @import("core_types.zig").CoreAction;
+const CoreRc = @import("core_types.zig").CoreRc;
 
 const Self = @This();
 
-/// Caps concurrent cores at 64 - one bit each, fits in one word.
-pub const max_cores = 64;
+const AtomicState = std.atomic.Value(State);
 
-busy_mask: std.atomic.Value(u64),
+raw_state: AtomicState,
+vm_ch: CtrlCh.Slave,
 
-pub fn init() Self {
-    return .{ .busy_mask = std.atomic.Value(u64).init(0) };
+sig: ?CtrlSig = null,
+sig_rc: ?CoreRc = null,
+
+pub fn init(ch: CtrlCh.Slave) Self {
+    return .{
+        .raw_state = AtomicState.init(State.newborn),
+        .vm_ch = ch,
+    };
 }
 
-/// Marks core_id as currently reducing an equation.
-pub fn setBit(self: *Self, core_id: u32) void {
-    std.debug.assert(core_id < max_cores);
-    _ = self.busy_mask.fetchOr(@as(u64, 1) << @intCast(core_id), .release);
+pub inline fn receiveSig(self: *Self) ?CtrlSig {
+    self.sig = self.vm_ch.tryReceiveFlag();
+    self.sig_rc = null;
+    return self.sig;
 }
 
-/// Marks core_id as idle - it found nothing left to reduce.
-pub fn clearBit(self: *Self, core_id: u32) void {
-    std.debug.assert(core_id < max_cores);
-    _ = self.busy_mask.fetchAnd(~(@as(u64, 1) << @intCast(core_id)), .release);
+pub inline fn responsSig(self: *Self) !void {
+    if (self.sig == null)
+        return;
+
+    if (self.sig_rc == null) {
+        try self.vm_ch.processedFlag();
+    } else {
+        try self.vm_ch.deniedFlag();
+    }
+
+    self.sig = null;
 }
 
-/// Raw snapshot of which cores are currently busy.
-pub fn read(self: *const Self) u64 {
-    return self.busy_mask.load(.acquire);
+pub inline fn putState(self: *Self, state: State) void {
+    self.raw_state.store(state, .release);
 }
+
+pub inline fn getState(self: *Self) State {
+    return self.raw_state.load(.acquire);
+}
+
+pub inline fn getStatePriv(self: *Self) State {
+    return self.raw_state.load(.monotonic);
+}
+
+const State = enum(u8) {
+    newborn,
+    applicant,
+    worker,
+    goner,
+    corpse,
+
+    pub fn applicantState(self: State) State {
+        std.debug.assert(self == .newborn or self == .applicant or self == .worker);
+        return .applicant;
+    }
+
+    pub fn corpseState(self: State) State {
+        std.debug.assert(self == .goner);
+        return .corpse;
+    }
+
+    pub fn sigNextState(
+        self: State,
+        sig: CtrlSig,
+    ) ?State {
+        return switch (sig) {
+            .kill_sig => switch (self) {
+                .applicant, .worker => .goner,
+                else => null,
+            },
+            .exec_sig => switch (self) {
+                .applicant, .worker => .worker,
+                else => null,
+            },
+            .stop_sig => switch (self) {
+                .worker => .applicant,
+                else => null,
+            },
+        };
+    }
+
+    pub fn toCoreAction(self: State) CoreAction {
+        switch (self) {
+            .worker => {
+                @branchHint(.likely);
+                return .exec;
+            },
+            .applicant => return .noop,
+            else => return .ret,
+        }
+    }
+};
