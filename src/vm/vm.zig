@@ -276,7 +276,7 @@ fn slaveSlotsInit(
 
 pub fn deinit(self: *Self) void {
     switch (self.vmode) {
-        .s => break,
+        .s => {},
         .m => |m| {
             // FIX:(kogora) bug_on (slots running or not)
             slaveSlotsDeinit(m.slots, &self.global_ctx, self.runtime);
@@ -337,7 +337,7 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
             try slaveSlotsInit(slots.?, runtime, global_ctx);
 
             vmode = .{ .m = .{
-                .slots = slots,
+                .slots = slots.?,
                 .master_ctrl = master_ctrl,
             }};
         },
@@ -543,14 +543,6 @@ inline fn execActivePair(self: *Self, mode: CoreMode) !void {
         self.global_ctx.name_heap.printUsage();
     }
 }
-
-const VmCtrl = struct {
-    
-
-    fn init() {
-
-    }
-};
 
 pub fn startCores(self: *Self) !void {
     if (self.cfg.getMode() != CoreMode.multiThread) {
