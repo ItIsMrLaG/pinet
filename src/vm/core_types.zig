@@ -3,7 +3,9 @@ const std = @import("std");
 
 pub const CoreMode = enum { singleThread, multiThread };
 pub const CoreRole = enum { master, slave };
-pub const CoreAction = enum { noop, exec, ret };
+
+// FIX:(kogora) remove at all
+pub const CoreAction = enum { noop, eval, ret };
 
 pub const CtrlSig = enum(u8) {
     kill_sig = 0,

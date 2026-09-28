@@ -41,6 +41,10 @@ pub inline fn responsSig(self: *Self) !void {
     self.sig = null;
 }
 
+pub inline fn sendStopSig(self: *Self, sig: CtrlSig) void {
+    self.vm_ch.trySetFlag(sig);
+}
+
 pub inline fn putState(self: *Self, state: State) void {
     self.raw_state.store(state, .release);
 }
@@ -53,19 +57,24 @@ pub inline fn getStatePriv(self: *Self) State {
     return self.raw_state.load(.monotonic);
 }
 
-const State = enum(u8) {
+pub const State = enum(u8) {
     newborn,
     applicant,
     worker,
     goner,
     corpse,
 
-    pub fn applicantState(self: State) State {
+    pub inline fn applicantState(self: State) State {
         std.debug.assert(self == .newborn or self == .applicant or self == .worker);
         return .applicant;
     }
 
-    pub fn corpseState(self: State) State {
+    pub inline fn gonerState(self: State) State {
+        std.debug.assert(self == .applicant or self == .worker);
+        return .goner;
+    }
+
+    pub inline fn corpseState(self: State) State {
         std.debug.assert(self == .goner);
         return .corpse;
     }
@@ -94,7 +103,7 @@ const State = enum(u8) {
         switch (self) {
             .worker => {
                 @branchHint(.likely);
-                return .exec;
+                return .eval;
             },
             .applicant => return .noop,
             else => return .ret,

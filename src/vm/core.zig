@@ -26,6 +26,7 @@ const CoreId = @import("core_types.zig").CoreId;
 const CoreAction = @import("core_types.zig").CoreAction;
 const CoreRc = @import("core_types.zig").CoreRc;
 const CoreRole = @import("core_types.zig").CoreRole;
+const CtrlSig = @import("core_types.zig").CtrlSig;
 
 pub const FlagCh = @import("flag_channel.zig").FlagCh;
 pub const FlagChType = @import("flag_channel.zig").FlagChType;
@@ -197,29 +198,29 @@ pub fn execInstructions(
     }
 }
 
-inline fn runEquationsSingleThread(c: *Core) !CoreRc {
+inline fn runEquationsSingleThread(c: *Core) !void {
     // NOTE:(kogora) dont use CoreCtrl at all
     while (c.local_ctx.fetchEquation()) |eq| {
         try Interaction.evalEquation(c, eq);
     }
-
-    return .finishRc;
 }
 
-inline fn runEquationsMaster(c: *Core) !CoreRc {
+inline fn runEquationsMaster(c: *Core) !void {
     // TODO:(kogora) add core_ctrl usage (as CoreMasterCtrl)
     while (c.local_ctx.fetchEquation()) |eq| {
         try Interaction.evalEquation(c, eq);
     }
-
-    return .finishRc;
 }
 
-fn executor(c: *Core) void {
+noinline fn noop() void {
+    std.atomic.spinLoopHint();
+}
+
+inline fn runEquationsSlave(c: *Core) !void {
     const ctrl = c.slaveCtrl();
 
     { // Init work (newborn -> applicant)
-        const cur_state = ctrl.getState();
+        const cur_state = ctrl.getStatePriv();
         const new_state = cur_state.applicantState();
         ctrl.putState(new_state);
     }
@@ -227,47 +228,65 @@ fn executor(c: *Core) void {
     live: while (true) {
         var cur_state = ctrl.getStatePriv();
 
-        // if (ctrl.receiveSig()) |sig| {
-        //
-        // }
+        if (cur_state != .goner and ctrl.receiveSig() != null) {
+            cur_state = cur_state.sigNextState(ctrl.sig.?);
+        }
 
-        const action: CoreAction = undefined;
-        switch (action) {
-            .exec => {
-                if (c.local_ctx.fetchEquation()) |eq| {
+        switch (cur_state) {
+            .worker => {
+                var new_state: CoreSlaveCtrl.State = undefined;
+                var sig: CtrlSig = undefined;
+
+                eval: {
+                    const eq = c.local_ctx.fetchEquation() orelse {
+                        new_state = cur_state.applicantState();
+                        sig = .stop_sig;
+                        break :eval;
+                    };
+
+                    Interaction.evalEquation(c, eq) catch {
+                        new_state = cur_state.gonerState();
+                        sig = .kill_sig;
+                        break :eval;
+                    };
+
                     continue :live;
                 }
 
-                // FIX:(kogora) send sig to vm and go to noop
+                ctrl.putState(new_state);
+                ctrl.sendSig(sig);
             },
-            .noop => std.atomic.spinLoopHint(),
-            .ret => {
-                // FIX:(kogora)
+            .applicant => {
+                if (ctrl.sig != null) {
+                    std.debug.assert(ctrl.sig.? == .stop_sig);
+                    ctrl.responsSig();
+
+                    std.debug.print("core-{} is an applicant (from sig)", c.id);
+                }
+
+                noop();
+            },
+            .goner => {
+                std.debug.print("core-{} is a goner", c.id);
                 break :live;
             },
+            .corpse, .newborn => unreachable,
         }
     }
 
     { // Deinit work (goner -> corpse)
-        const cur_state = ctrl.getState();
+        const cur_state = ctrl.getStatePriv();
         const new_state = cur_state.corpseState();
         ctrl.putState(new_state);
     }
 
-    // should be the last statement
-    ctrl.responsSig();
-}
-
-inline fn runEquationsSlave(c: *Core) !CoreRc {
-    // TODO:(kogora) add core_ctrl usage (as CoreSlaveCtrl)
-    while (c.local_ctx.fetchEquation()) |eq| {
-        try Interaction.evalEquation(c, eq);
+    if (ctrl.sig != null) {
+        std.debug.assert(ctrl.sig.? == .kill_sig);
+        ctrl.responsSig();
     }
-
-    return .finishRc;
 }
 
-pub fn runEquations(c: *Core) !CoreRc {
+pub fn runEquations(c: *Core) !void {
     return switch (c.mode) {
         .singleThread => try runEquationsSingleThread(c),
         .multiThread => switch (c.id) {

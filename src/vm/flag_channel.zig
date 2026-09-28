@@ -7,10 +7,6 @@ const CtrlSig = @import("core_types.zig").CtrlSig;
 
 pub const CtrlCh = FlagCh(CtrlSig);
 
-// FIX:(kogora):
-// - master shouldnt answer the slave if slave send signal (master always clear state)
-// - that should be effective
-
 /// Each slot packs a small protocol state machine into the low
 /// `control_bits` bits of a u32, and the caller's own flag payload `T`
 /// (e.g. FlagChType) into the remaining high bits.
@@ -130,10 +126,6 @@ fn FlagCh(comptime T: type) type {
                     return r == null;
                 }
 
-                /// Acknowledges a message the peer flagged and returns its
-                /// payload, or null if the channel isn't flagged by the
-                /// peer. The mode recorded in the flag stays the peer's,
-                /// so only the peer can later clear it.
                 pub fn tryReceiveFlag(self: *User) ?T {
                     const flagged_ctrl = Bit.getMask(.flagged, peerMode(mode));
 
@@ -180,10 +172,19 @@ fn FlagCh(comptime T: type) type {
                     }
                 }
 
-                /// Resets the channel back to empty. Only the side that
-                /// originally flagged it may clear it, and only once it's
-                /// no longer mid-flight (i.e. not `.received`).
+                pub fn readFlag(self: *User) struct { Mode, State, T } {
+                    const cur = self.ch.f.load(.acquire);
+
+                    const r = Bit.extractMode(cur);
+                    const value_bits = cur & Bit.m_value_mask;
+                    return .{ r[0], Bit.maskToState(r[1]), Bit.unpackValue(value_bits) };
+                }
+
+                /// Resets the channel back to empty.
+                /// master-only.
                 pub fn tryClearFlag(self: *User) !struct { bool, State } {
+                    comptime if (mode != .master) @compileError("tryClearFlag is master-only");
+
                     const cur = self.ch.f.load(.acquire);
 
                     if (cur == init_value) {
@@ -207,12 +208,28 @@ fn FlagCh(comptime T: type) type {
                     return .{ true, cur_state };
                 }
 
-                pub fn readFlag(self: *User) struct { Mode, State, T } {
-                    const cur = self.ch.f.load(.acquire);
+                /// Consumes a message the slave flagged in one step,
+                /// clearing it straight back to empty instead of walking
+                /// through `.received`/`.processed`/`.denied`.
+                /// master-only.
+                pub fn tryConsumeFlag(self: *User) ?T {
+                    comptime if (mode != .master) @compileError("tryConsumeFlag is master-only");
 
-                    const r = Bit.extractMode(cur);
+                    const flagged_ctrl = Bit.getMask(.flagged, peerMode(mode));
+
+                    const cur = self.ch.f.load(.acquire);
+                    if (cur & Bit.m_control_mask != flagged_ctrl) {
+                        return null;
+                    }
+
                     const value_bits = cur & Bit.m_value_mask;
-                    return .{ r[0], Bit.maskToState(r[1]), Bit.unpackValue(value_bits) };
+
+                    const r = self.ch.f.cmpxchgStrong(cur, init_value, .seq_cst, .seq_cst);
+                    if (r != null) {
+                        return null;
+                    }
+
+                    return Bit.unpackValue(value_bits);
                 }
             };
         }
@@ -330,20 +347,6 @@ test "tryReceiveFlag fails on empty or already-received slot" {
     try testing.expectEqual(null, slave.tryReceiveFlag());
 }
 
-test "slave cannot clear a flag it did not set" {
-    const ch = try TestCh.create(testing.allocator);
-    defer ch.destroy(testing.allocator);
-
-    var master = ch.getMaster();
-    var slave = ch.getSlave();
-
-    try testing.expect(master.trySetFlag(.exec_ch));
-
-    const r = try slave.tryClearFlag();
-    try testing.expect(!r[0]);
-    try testing.expectEqual(.flagged, r[1]);
-}
-
 test "master cannot clear a flag that is mid-flight (received)" {
     const ch = try TestCh.create(testing.allocator);
     defer ch.destroy(testing.allocator);
@@ -426,6 +429,35 @@ test "processedFlag and deniedFlag preserve the original payload" {
     _ = slave1.tryReceiveFlag();
     try slave1.deniedFlag();
     try testing.expectEqual(.exec_ch, master1.readFlag()[2]);
+}
+
+test "tryConsumeFlag clears the flag without the flagger's involvement" {
+    const ch = try TestCh.create(testing.allocator);
+    defer ch.destroy(testing.allocator);
+
+    var master = ch.getMaster();
+    var slave = ch.getSlave();
+
+    try testing.expect(slave.trySetFlag(.stop_ch));
+    try testing.expectEqual(.stop_ch, master.tryConsumeFlag().?);
+    try testing.expectEqual(.empty, master.readFlag()[1]);
+
+    // The slave never gets to see .received/.processed - the slot is
+    // simply empty again, ready for the next signal.
+    try testing.expect(slave.trySetFlag(.kill_ch));
+}
+
+test "tryConsumeFlag fails on empty or non-peer-flagged slot" {
+    const ch = try TestCh.create(testing.allocator);
+    defer ch.destroy(testing.allocator);
+
+    var master = ch.getMaster();
+
+    try testing.expectEqual(null, master.tryConsumeFlag());
+
+    // Flagged by the master itself, not the slave - not consumable.
+    try testing.expect(master.trySetFlag(.exec_ch));
+    try testing.expectEqual(null, master.tryConsumeFlag());
 }
 
 test "flags are cache-line aligned to avoid false sharing" {
