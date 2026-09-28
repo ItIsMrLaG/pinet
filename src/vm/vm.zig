@@ -316,7 +316,6 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
         },
         .multiThread => {
             var master_ctrl: ?*CoreMasterCtrl = null;
-            var slots: ?[]SlaveSlot = null;
 
             const created_master_ctrl = try runtime.gpa.create(CoreMasterCtrl);
             errdefer runtime.gpa.destroy(created_master_ctrl);
@@ -331,13 +330,13 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
                 try global_ctx.createVmLocal(),
             );
 
-            slots = try runtime.gpa.alloc(SlaveSlot, cfg.cores_num);
-            errdefer runtime.gpa.free(slots.?);
+            const slots: []SlaveSlot = try runtime.gpa.alloc(SlaveSlot, cfg.cores_num);
+            errdefer runtime.gpa.free(slots);
 
-            try slaveSlotsInit(slots.?, runtime, global_ctx);
+            try slaveSlotsInit(slots, runtime, global_ctx);
 
             vmode = .{ .m = .{
-                .slots = slots.?,
+                .slots = slots,
                 .master_ctrl = master_ctrl,
             }};
         },
