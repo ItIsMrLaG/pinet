@@ -2,7 +2,6 @@
 const std = @import("std");
 pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
 pub const CtrlSig = @import("flag_channel.zig").CtrlSig;
-const CoreAction = @import("core_types.zig").CoreAction;
 const CoreRc = @import("core_types.zig").CoreRc;
 
 const Self = @This();
@@ -97,16 +96,5 @@ pub const State = enum(u8) {
                 else => null,
             },
         };
-    }
-
-    pub fn toCoreAction(self: State) CoreAction {
-        switch (self) {
-            .worker => {
-                @branchHint(.likely);
-                return .eval;
-            },
-            .applicant => return .noop,
-            else => return .ret,
-        }
     }
 };

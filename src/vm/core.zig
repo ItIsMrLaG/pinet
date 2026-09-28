@@ -23,7 +23,6 @@ const Normalize = @import("normalize.zig");
 
 const CoreMode = @import("core_types.zig").CoreMode;
 const CoreId = @import("core_types.zig").CoreId;
-const CoreAction = @import("core_types.zig").CoreAction;
 const CoreRc = @import("core_types.zig").CoreRc;
 const CoreRole = @import("core_types.zig").CoreRole;
 const CtrlSig = @import("core_types.zig").CtrlSig;

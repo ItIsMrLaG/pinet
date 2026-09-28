@@ -19,16 +19,14 @@ const EquationUnnormalized = Types.EquationUnnormalized;
 pub const Core = @import("core.zig");
 const CoreMode = @import("core_types.zig").CoreMode;
 const CoreId = @import("core_types.zig").CoreId;
-const CoreAction = @import("core_types.zig").CoreAction;
 const CoreRc = @import("core_types.zig").CoreRc;
 const CoreRole = @import("core_types.zig").CoreRole;
+const CtrlSig = @import("core_types.zig").CtrlSig;
 
 pub const CoreMasterCtrl = @import("core_master_ctrl.zig");
 pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
 
-// FIX:(kogora)
 pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
-pub const FlagChType = @import("flag_channel.zig").FlagChType;
 
 pub const Builtin = @import("builtin.zig");
 pub const Importer = @import("importer.zig");
@@ -485,17 +483,14 @@ inline fn prepareActivePair(self: *Self, ap: AST.ActivePair) !void {
 }
 
 inline fn execActivePairVmCore(self: *Self) !void {
-    _ = try self.vm_core.runEquations();
+    try self.vm_core.runEquations();
 }
 
 inline fn execActivePairMultiCores(self: *Self) !void {
     if (self.config.warmup) {
-        const rc = try self.vm_core.runEquations();
-        if (rc == CoreRc.finishRc) {
-            return;
-        }
-
+        try self.vm_core.runEquations();
         self.global_ctx.balanceEquations();
+        return;
     }
 
     // TODO:(kogora): multithread version
