@@ -559,17 +559,23 @@ pub fn startCores(self: *Self) !void {
         }
     }
 
-    for (slots, 0..) |*slot, started| { // FIX: in case of error there whould be a thread leak?
-        slot.thread = std.Thread.spawn(.{}, Core.runEquations, .{&slot.core}) catch |err| {
-            for (slots[0..started]) |*started_slot| {
-                while (!started_slot.ch.trySetFlag(.kill_sig)) {
-                    std.atomic.spinLoopHint();
-                }
-                started_slot.thread.?.join();
-                started_slot.thread = null;
-            }
-            return err;
-        };
+             // FIX:(kogora) add api for that
+    errdefer for (slots) |*slot| {
+        if (slot.thread == null) {
+            continue;
+        }
+
+        // FIX:(kogora) add api for that
+        while (!slot.ch.trySetFlag(.kill_sig)) {
+            std.atomic.spinLoopHint();
+        }
+
+        slot.thread.?.join();
+        slot.thread = null;
+    };
+
+    for (slots) |*slot| {
+        slot.thread = try std.Thread.spawn(.{}, Core.runEquations, .{&slot.core});
     }
 
     // TODO:(kogora) add timeout
@@ -588,7 +594,7 @@ pub fn stopCores(self: *Self) void {
 
     std.debug.assert(self.vmode.m.need_stop_cores);
     self.vmode.m.need_stop_cores = false;
-    // TODO:(kogora) start cores
+    // FIX:(kogora) start cores
     // dont implement it now
 }
 
