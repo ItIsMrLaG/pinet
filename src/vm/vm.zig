@@ -559,7 +559,7 @@ pub fn startCores(self: *Self) !void {
         }
     }
 
-    for (slots) |*slot| {
+    for (slots) |*slot| { // FIX: in case of error there whould be a thread leak?
         slot.thread = try std.Thread.spawn(.{}, Core.runEquations, .{&slot.core});
     }
 
