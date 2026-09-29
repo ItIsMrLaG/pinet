@@ -52,7 +52,9 @@ var available_core_id: u32 = 0;
 const VMode = union(enum) {
     s: void,
     m: struct {
-        master_ctrl: ?*CoreMasterCtrl,
+        master_ctrl: *CoreMasterCtrl,
+
+        need_stop_cores: bool = false,
         slots: []SlaveSlot,
     },
 };
@@ -282,9 +284,7 @@ pub fn deinit(self: *Self) void {
             slaveSlotsDeinit(m.slots, &self.global_ctx, self.runtime);
             self.runtime.gpa.free(m.slots);
 
-            if (self.vmode.m.master_ctrl) |master_ctrl| {
-                self.runtime.gpa.destroy(master_ctrl);
-            }
+            self.runtime.gpa.destroy(self.vmode.m.master_ctrl);
         },
     }
 
@@ -294,7 +294,7 @@ pub fn deinit(self: *Self) void {
 pub fn init(runtime: *Runtime, cfg: Config) !Self {
     try cfg.isValid();
 
-    const mode =  cfg.getMode();
+    const mode = cfg.getMode();
     std.debug.assert(mode == CoreMode.singleThread); // TODO:(kogora): multithread version
 
     var vm_core: Core = undefined;
@@ -315,18 +315,15 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
             );
         },
         .multiThread => {
-            var master_ctrl: ?*CoreMasterCtrl = null;
-
-            const created_master_ctrl = try runtime.gpa.create(CoreMasterCtrl);
-            errdefer runtime.gpa.destroy(created_master_ctrl);
-            created_master_ctrl.* = CoreMasterCtrl.init();
-            master_ctrl = created_master_ctrl;
+            const master_ctrl = try runtime.gpa.create(CoreMasterCtrl);
+            errdefer runtime.gpa.destroy(master_ctrl);
+            master_ctrl.* = CoreMasterCtrl.init();
 
             vm_core = Core.init(
                 CoreId{ .master = {} },
                 mode,
                 runtime,
-                Core.CoreCtrl{ .master = created_master_ctrl },
+                Core.CoreCtrl{ .master = master_ctrl },
                 try global_ctx.createVmLocal(),
             );
 
@@ -338,7 +335,7 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
             vmode = .{ .m = .{
                 .slots = slots,
                 .master_ctrl = master_ctrl,
-            }};
+            } };
         },
     }
 
@@ -547,12 +544,30 @@ pub fn startCores(self: *Self) !void {
     if (self.cfg.getMode() != CoreMode.multiThread) {
         return;
     }
+
+    std.debug.assert(!self.vmode.m.need_stop_cores);
+    self.vmode.m.need_stop_cores = true;
+    // TODO:(kogora) start cores
+    // - data about core-running should lay in SlaveSlot
+    // - vm should check that all cores have state newborn
+    //   if at least one have another state -- then fail
+    // - vm should start all cores
+    // - the correct result if all cores have states: applicant
+    //   + add debug print about how many cores should be at all
+    //   + add debug print about id of checked core
+    //   + add TODO: about create logger for vm and cores
+    //   + add TODO: add timeout
 }
 
 pub fn stopCores(self: *Self) void {
     if (self.cfg.getMode() != CoreMode.multiThread) {
         return;
     }
+
+    std.debug.assert(self.vmode.m.need_stop_cores);
+    self.vmode.m.need_stop_cores = false;
+    // TODO:(kogora) start cores
+    // dont implement it now
 }
 
 pub fn runProgram(self: *Self, program: AST.Program) !void {
