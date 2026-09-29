@@ -86,6 +86,7 @@ pub const SlaveSlot = struct {
     ctrl: CoreSlaveCtrl,
 
     core: Core,
+    thread: ?std.Thread = null,
 
     pub fn init(
         self: *SlaveSlot,
@@ -547,16 +548,28 @@ pub fn startCores(self: *Self) !void {
 
     std.debug.assert(!self.vmode.m.need_stop_cores);
     self.vmode.m.need_stop_cores = true;
-    // TODO:(kogora) start cores
-    // - data about core-running should lay in SlaveSlot
-    // - vm should check that all cores have state newborn
-    //   if at least one have another state -- then fail
-    // - vm should start all cores
-    // - the correct result if all cores have states: applicant
-    //   + add debug print about how many cores should be at all
-    //   + add debug print about id of checked core
-    //   + add TODO: about create logger for vm and cores
-    //   + add TODO: add timeout
+
+    const slots = self.vmode.m.slots;
+    // TODO:(kogora) create logger for vm and cores
+    std.debug.print("vm: starting {} core(s)\n", .{slots.len});
+
+    for (slots) |*slot| {
+        if (slot.ctrl.getState() != .newborn) {
+            return error.CoreNotNewborn;
+        }
+    }
+
+    for (slots) |*slot| {
+        slot.thread = try std.Thread.spawn(.{}, Core.runEquations, .{&slot.core});
+    }
+
+    // TODO:(kogora) add timeout
+    for (slots) |*slot| {
+        while (slot.ctrl.getState() != .applicant) {
+            std.atomic.spinLoopHint();
+        }
+        std.debug.print("vm: core-{} is applicant\n", .{slot.core.id.slave});
+    }
 }
 
 pub fn stopCores(self: *Self) void {
