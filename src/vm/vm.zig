@@ -22,9 +22,12 @@ const CoreId = @import("core_types.zig").CoreId;
 const CoreRc = @import("core_types.zig").CoreRc;
 const CoreRole = @import("core_types.zig").CoreRole;
 const CtrlSig = @import("core_types.zig").CtrlSig;
+const Policy = @import("core_types.zig").Policy;
+const ActTimer = @import("core_types.zig").ActTimer;
 
 pub const CoreMasterCtrl = @import("core_master_ctrl.zig");
 pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
+pub const SlaveCtrlState = @import("core_slave_ctrl.zig").State;
 
 pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
 
@@ -38,6 +41,9 @@ const VM = @This();
 const Self = VM;
 
 const getUser = "getUser";
+
+// TODO:(kogora) comptime param
+const global_policy = Policy.all;
 
 cfg: Config,
 
@@ -53,65 +59,117 @@ const VMode = union(enum) {
     s: Single,
     m: Multi,
 
+    fn initS() VMode {
+        return .{ .s = .{} };
+    }
+
+    fn initM(
+        cfg: Config,
+        runtime: *Runtime,
+        gpa: std.mem.Allocator,
+        global_ctx: GlobalCtx,
+    ) !VMode {
+        // TODO:(kogora) support timout_opt in Config (now it is null)
+        return .{ .m = try Multi.init(null, cfg.cores_num, gpa, runtime, global_ctx) };
+    }
+
+    fn deinit(
+        self: *VMode,
+        gpa: std.mem.Allocator,
+        global_ctx: GlobalCtx,
+    ) void {
+        switch (self) {
+            .s => {},
+            .m => |m| {
+                m.deinit(global_ctx, gpa);
+            },
+        }
+    }
+
     const Single = void;
     const Multi = struct {
         master_ctrl: *CoreMasterCtrl,
-
-        need_stop_cores: bool = false,
-        slots: []SlaveSlot,
-
+        slots: []Slot,
         timer: ActTimer,
 
-        const ActTimer = struct {
-            need: bool,
-            max_ms: i64,
-            start_ms: i64 = 0,
-
-            fn init(comptime timout_opt: ?i64) ActTimer {
-                return if (timout_opt) |timout|
-                    .{ .need = true, .max_ms = timout }
-                else
-                    .{ .need = false, .max_ms = 0 };
+        fn slotsDeinit(
+            slots: []Slot,
+            global_ctx: *GlobalCtx,
+            gpa: std.mem.Allocator,
+        ) void {
+            for (slots) |*slot| {
+                global_ctx.destroyLocal(slot.core.local_ctx, gpa);
+                slot.ch.ch.destroy(gpa);
             }
 
-            fn start(self: *ActTimer) void {
-                self.start_ms = std.time.milliTimestamp();
+            gpa.free(slots);
+        }
+
+        fn slotsInit(
+            runtime: *Runtime,
+            global_ctx: GlobalCtx,
+            slots_cnt: usize,
+            gpa: std.mem.Allocator,
+        ) ![]Slot {
+            const slots: []Slot = try gpa.alloc(Slot, slots_cnt);
+            errdefer gpa.free(slots);
+
+            for (slots) |*slot| {
+                // FIX:(kogora) if error => mem leak now
+                const ch = try CtrlCh.create(gpa);
+                const ctx = global_ctx.createLocal(gpa);
+
+                slot.init(CoreMode.multiThread, available_core_id, ch, runtime, ctx);
+
+                available_core_id += 1;
             }
 
-            fn stop(self: *ActTimer) void {
-                self.start_ms = 0;
-            }
+            return slots;
+        }
 
-            fn reset(self: *ActTimer) void {
-                self.stop();
-                self.start();
-            }
+        fn masterCtrlDeinit(master_ctrl: *CoreMasterCtrl, gpa: std.mem.Allocator) void {
+            master_ctrl.deinit();
+            gpa.destroy(master_ctrl);
+        }
 
-            fn is_timeout(self: *ActTimer) bool {
-                // TODO:(kogora) is milliTimestamp() monotonic?
-                const elapsed_ms: i64 = std.time.milliTimestamp() - self.start_ms;
-                if (elapsed_ms > self.max_ms) {
-                    return false;
-                }
+        fn masterCtrlInit(gpa: std.mem.Allocator) !*CoreMasterCtrl {
+            const master_ctrl = try gpa.create(CoreMasterCtrl);
+            errdefer gpa.destroy(master_ctrl);
 
-                return true;
-            }
-        };
+            master_ctrl.* = CoreMasterCtrl.init();
+            return master_ctrl;
+        }
 
-        const Policy = enum {
-            // TODO:(kogora) add comments
-            all,
-            mb_all,
-            broudcast,
+        fn deinit(
+            self: *Multi,
+            global_ctx: GlobalCtx,
+            gpa: std.mem.Allocator,
+        ) void {
+            slotsDeinit(self.slots, global_ctx, gpa);
+            masterCtrlDeinit(self.master_ctrl, gpa);
+        }
 
-            fn need_next(comptime self: Policy, is_success: bool, timer: ActTimer) bool {
-                return switch (self) {
-                    .all => is_success,
-                    .mb_all => is_success or timer.is_timeout(),
-                    .broudcast => true,
-                };
-            }
-        };
+        fn init(
+            timout_opt: ?i64,
+            slot_cnt: usize,
+            gpa: std.mem.Allocator,
+            runtime: *Runtime,
+            global_ctx: GlobalCtx,
+        ) !Multi {
+            const slots = try slotsInit(runtime, global_ctx, slot_cnt, gpa);
+            errdefer slotsDeinit(slots, global_ctx, gpa);
+
+            const master_ctrl = try masterCtrlInit(gpa);
+            errdefer masterCtrlDeinit(master_ctrl, gpa);
+
+            const timer = ActTimer.init(timout_opt);
+
+            return .{
+                .timer = timer,
+                .slots = slots,
+                .master_ctrl = master_ctrl,
+            };
+        }
 
         // FIX:(kogora) enhance the msg:
         /// return null in success case and idx of slot whithout status
@@ -119,12 +177,13 @@ const VMode = union(enum) {
             self: *Multi,
             comptime policy: Policy,
             context: anytype,
-            comptime is_success: fn (*SlaveSlot, @TypeOf(context)) bool,
+            comptime is_success: fn (*Slot, @TypeOf(context)) bool,
         ) ?usize {
-            defer self.timer.stop();
             var res: ?usize = null;
 
             next_slot: for (self.slots, 0..) |*slot, idx| {
+                self.timer.reset();
+
                 while (true) {
                     const success = is_success(slot, context);
 
@@ -141,6 +200,41 @@ const VMode = union(enum) {
             }
 
             return res;
+        }
+
+        fn anyCoreThreadSpawned(self: *Multi) bool {
+            for (self.slots) |*slot| {
+                if (slot.thread) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        fn spawnCoreThreads(self: *Multi) !void {
+            for (self.slots) |*slot| {
+                slot.thread = try std.Thread.spawn(.{}, Core.runEquations, .{&slot.core});
+            }
+        }
+
+        fn killCoreThreads(self: *Multi, policy: Policy) void {
+            for (self.slots) |*slot| {
+                if (slot.thread == null) {
+                    continue;
+                }
+
+                self.timer.reset();
+                _ = slot.waitUntilSlot(
+                    policy,
+                    CtrlSig.kill_sig,
+                    Slot.sigSent,
+                    &self.timer,
+                );
+
+                slot.thread.?.join();
+                slot.thread = null;
+            }
         }
     };
 };
@@ -167,7 +261,7 @@ pub const Config = struct {
     }
 };
 
-pub const SlaveSlot = struct {
+pub const Slot = struct {
     ch: CtrlCh.Master,
     ctrl: CoreSlaveCtrl,
 
@@ -175,7 +269,7 @@ pub const SlaveSlot = struct {
     thread: ?std.Thread = null,
 
     pub fn init(
-        self: *SlaveSlot,
+        self: *Slot,
         mode: CoreMode,
         raw_id: u32,
         ch: *CtrlCh,
@@ -197,25 +291,34 @@ pub const SlaveSlot = struct {
             ),
         };
     }
-};
 
-fn stateReached(slot: *SlaveSlot, state: CoreSlaveCtrl.State) bool {
-    return slot.ctrl.getState() == state;
-}
+    fn waitUntilSlot(
+        slot: *Slot,
+        comptime policy: Policy,
+        context: anytype,
+        comptime is_success: fn (*Slot, @TypeOf(context)) bool,
+        timer: *ActTimer,
+    ) bool {
+        while (true) {
+            const success = is_success(slot, context);
+            if (policy.need_next(success, timer)) {
+                return success;
+            }
 
-fn sigSent(slot: *SlaveSlot, sig: CtrlSig) bool {
-    return slot.ch.trySetFlag(sig);
-}
-
-fn waitUntilSlot(
-    slot: *SlaveSlot,
-    context: anytype,
-    comptime is_success: fn (*SlaveSlot, @TypeOf(context)) bool,
-) void {
-    while (!is_success(slot, context)) {
-        std.atomic.spinLoopHint();
+            std.atomic.spinLoopHint();
+        }
     }
-}
+
+    fn stateReached(slot: *Slot, state: CoreSlaveCtrl.State) bool {
+        return slot.ctrl.getState() == state;
+    }
+
+    fn sigSent(slot: *Slot, sig: CtrlSig) bool {
+        return slot.ch.trySetFlag(sig);
+        // FIX:(kogora) i should send and get success answer
+        // now it doesnt work
+    }
+};
 
 pub const GlobalCtx = struct {
     agent_heap: Memory.Heap(Agent),
@@ -354,41 +457,13 @@ pub const GlobalCtx = struct {
     }
 };
 
-fn slaveSlotsDeinit(
-    slots: []SlaveSlot,
-    global_ctx: *GlobalCtx,
-    runtime: *Runtime,
-) void {
-    for (slots) |*slot| {
-        global_ctx.destroyLocal(slot.core.local_ctx, runtime.gpa);
-        slot.ch.ch.destroy(runtime.gpa);
-    }
-}
-
-fn slaveSlotsInit(
-    slots: []SlaveSlot,
-    runtime: *Runtime,
-    global_ctx: GlobalCtx,
-) !void {
-    for (slots) |*slot| {
-        // FIX:(kogora) if error => mem leak now
-        const ch = try CtrlCh.create(runtime.gpa);
-        const ctx = global_ctx.createLocal(runtime.gpa);
-
-        slot.init(CoreMode.multiThread, available_core_id, ch, runtime, ctx);
-
-        available_core_id += 1;
-    }
-}
-
 pub fn deinit(self: *Self) void {
     switch (self.vmode) {
         .s => {},
         .m => |m| {
-            // FIX:(kogora) bug_on (slots running or not)
-            slaveSlotsDeinit(m.slots, &self.global_ctx, self.runtime);
-            self.runtime.gpa.free(m.slots);
+            std.debug.assert(!m.anyCoreThreadSpawned());
 
+            m.slotsDeinit(&self.global_ctx, self.runtime.gpa);
             self.runtime.gpa.destroy(self.vmode.m.master_ctrl);
         },
     }
@@ -410,7 +485,7 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
 
     switch (mode) {
         .singleThread => {
-            vmode = .{ .s = {} };
+            vmode = VMode.initS();
             vm_core = Core.init(
                 CoreId{ .master = {} },
                 mode,
@@ -420,28 +495,16 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
             );
         },
         .multiThread => {
-            const master_ctrl = try runtime.gpa.create(CoreMasterCtrl);
-            errdefer runtime.gpa.destroy(master_ctrl);
-            master_ctrl.* = CoreMasterCtrl.init();
+            vmode = try VMode.initM(cfg, runtime, runtime.gpa, global_ctx);
+            errdefer vmode.deinit(runtime.gpa, global_ctx);
 
             vm_core = Core.init(
                 CoreId{ .master = {} },
                 mode,
                 runtime,
-                Core.CoreCtrl{ .master = master_ctrl },
+                Core.CoreCtrl{ .master = vmode.m.master_ctrl },
                 try global_ctx.createVmLocal(),
             );
-
-            const slots: []SlaveSlot = try runtime.gpa.alloc(SlaveSlot, cfg.cores_num);
-            errdefer runtime.gpa.free(slots);
-
-            try slaveSlotsInit(slots, runtime, global_ctx);
-
-            vmode = .{ .m = .{
-                .slots = slots,
-                .master_ctrl = master_ctrl,
-                .timer = .init(null),
-            } };
         },
     }
 
@@ -647,57 +710,36 @@ inline fn execActivePair(self: *Self, mode: CoreMode) !void {
 }
 
 pub fn startCores(self: *Self) !void {
-    if (self.cfg.getMode() != CoreMode.multiThread) {
+    if (self.cfg.getMode() != .multiThread) {
         return;
     }
 
     const m: *VMode.Multi = &self.vmode.m;
 
-    std.debug.assert(!m.need_stop_cores);
-    m.need_stop_cores = true;
-
     // TODO:(kogora) create logger for vm and cores
     std.debug.print("vm: starting {} core(s)\n", .{m.slots.len});
 
-    if (m.waitUntil(.all, CoreSlaveCtrl.State.newborn, stateReached)) |fail_slot_idx| {
+    if (m.waitUntil(.broudcast, SlaveCtrlState.newborn, Slot.stateReached)) |fail_slot_idx| {
         std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
         return error.CoreNotNewborn;
     }
 
-    errdefer for (m.slots) |*slot| {
-        if (slot.thread == null) {
-            continue;
-        }
+    try m.spawnCoreThreads();
+    errdefer m.killCoreThreads(global_policy);
 
-        waitUntilSlot(slot, CtrlSig.kill_sig, sigSent);
-
-        slot.thread.?.join();
-        slot.thread = null;
-    };
-
-    for (m.slots) |*slot| {
-        slot.thread = try std.Thread.spawn(.{}, Core.runEquations, .{&slot.core});
-    }
-
-    // TODO:(kogora) add timeout
-    for (m.slots) |*slot| {
-        if (m.waitUntil(.all, CoreSlaveCtrl.State.applicant, stateReached)) |fail_slot_idx| {
-            std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
-            return error.CoreNotNewborn;
-        }
-        std.debug.print("vm: core-{} is applicant\n", .{slot.core.id.slave});
+    if (m.waitUntil(.try_all, SlaveCtrlState.applicant, Slot.stateReached)) |fail_slot_idx| {
+        std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
+        return error.CoreNotNewborn;
     }
 }
 
 pub fn stopCores(self: *Self) void {
-    if (self.cfg.getMode() != CoreMode.multiThread) {
+    if (self.cfg.getMode() != .multiThread) {
         return;
     }
 
-    std.debug.assert(self.vmode.m.need_stop_cores);
-    self.vmode.m.need_stop_cores = false;
-    // FIX:(kogora) start cores
-    // dont implement it now
+    const m: *VMode.Multi = &self.vmode.m;
+    m.killCoreThreads(global_policy);
 }
 
 pub fn runProgram(self: *Self, program: AST.Program) !void {

@@ -56,7 +56,6 @@ pub inline fn getStatePriv(self: *Self) State {
     return self.raw_state.load(.monotonic);
 }
 
-// FIX:(kogora) move to types
 pub const State = enum(u8) {
     newborn,
     applicant,
