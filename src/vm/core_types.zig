@@ -19,13 +19,13 @@ pub const CoreId = union(CoreRole) {
     slave: u32,
 };
 
-const Policy = enum {
+pub const Policy = enum {
     // TODO:(kogora) add comments
     all,
     try_all,
     broudcast,
 
-    fn need_next(comptime self: Policy, is_success: bool, timer: ActTimer) bool {
+    pub fn need_next(comptime self: Policy, is_success: bool, timer: ActTimer) bool {
         return switch (self) {
             .all => is_success,
             .try_all => is_success or timer.is_timeout(),
@@ -34,38 +34,40 @@ const Policy = enum {
     }
 };
 
-const ActTimer = struct {
+pub const ActTimer = struct {
     need: bool,
     max_ms: i64,
-    start_ms: i64 = 0,
+    io: std.Io,
+    start_ts: std.Io.Timestamp = .zero,
 
-    fn init(timout_opt: ?i64) ActTimer {
+    pub fn init(timout_opt: ?i64, io: std.Io) ActTimer {
         return if (timout_opt) |timout|
-            .{ .need = true, .max_ms = timout }
+            .{ .need = true, .max_ms = timout, .io = io }
         else
-            .{ .need = false, .max_ms = 0 };
+            .{ .need = false, .max_ms = 0, .io = io };
     }
 
     fn start(self: *ActTimer) void {
-        self.start_ms = std.time.milliTimestamp();
+        self.start_ts = std.Io.Clock.awake.now(self.io);
     }
 
     fn stop(self: *ActTimer) void {
-        self.start_ms = 0;
+        self.start_ts = .zero;
     }
 
-    fn reset(self: *ActTimer) void {
+    pub fn reset(self: *ActTimer) void {
         self.stop();
         self.start();
     }
 
-    fn is_timeout(self: *ActTimer) bool {
-        // TODO:(kogora) is milliTimestamp() monotonic?
-        const elapsed_ms: i64 = std.time.milliTimestamp() - self.start_ms;
-        if (elapsed_ms > self.max_ms) {
+    fn is_timeout(self: ActTimer) bool {
+        if (!self.need) {
             return false;
         }
 
-        return true;
+        const now = std.Io.Clock.awake.now(self.io);
+        const elapsed_ms = self.start_ts.durationTo(now).toMilliseconds();
+
+        return elapsed_ms > self.max_ms;
     }
 };

@@ -60,7 +60,7 @@ const VMode = union(enum) {
     m: Multi,
 
     fn initS() VMode {
-        return .{ .s = .{} };
+        return .{ .s = {} };
     }
 
     fn initM(
@@ -78,9 +78,9 @@ const VMode = union(enum) {
         gpa: std.mem.Allocator,
         global_ctx: GlobalCtx,
     ) void {
-        switch (self) {
+        switch (self.*) {
             .s => {},
-            .m => |m| {
+            .m => |*m| {
                 m.deinit(global_ctx, gpa);
             },
         }
@@ -94,7 +94,7 @@ const VMode = union(enum) {
 
         fn slotsDeinit(
             slots: []Slot,
-            global_ctx: *GlobalCtx,
+            global_ctx: GlobalCtx,
             gpa: std.mem.Allocator,
         ) void {
             for (slots) |*slot| {
@@ -162,7 +162,7 @@ const VMode = union(enum) {
             const master_ctrl = try masterCtrlInit(gpa);
             errdefer masterCtrlDeinit(master_ctrl, gpa);
 
-            const timer = ActTimer.init(timout_opt);
+            const timer = ActTimer.init(timout_opt, runtime.io);
 
             return .{
                 .timer = timer,
@@ -204,7 +204,7 @@ const VMode = union(enum) {
 
         fn anyCoreThreadSpawned(self: *Multi) bool {
             for (self.slots) |*slot| {
-                if (slot.thread) {
+                if (slot.thread != null) {
                     return true;
                 }
             }
@@ -218,7 +218,7 @@ const VMode = union(enum) {
             }
         }
 
-        fn killCoreThreads(self: *Multi, policy: Policy) void {
+        fn killCoreThreads(self: *Multi, comptime policy: Policy) void {
             for (self.slots) |*slot| {
                 if (slot.thread == null) {
                     continue;
@@ -301,7 +301,7 @@ pub const Slot = struct {
     ) bool {
         while (true) {
             const success = is_success(slot, context);
-            if (policy.need_next(success, timer)) {
+            if (policy.need_next(success, timer.*)) {
                 return success;
             }
 
@@ -435,7 +435,7 @@ pub const GlobalCtx = struct {
         };
     }
 
-    pub fn destroyLocal(self: *GlobalCtx, local_ctx: Core.LocalCtx, gpa: std.mem.Allocator) void {
+    pub fn destroyLocal(self: GlobalCtx, local_ctx: Core.LocalCtx, gpa: std.mem.Allocator) void {
         _ = self;
         _ = local_ctx;
         _ = gpa;
@@ -460,11 +460,10 @@ pub const GlobalCtx = struct {
 pub fn deinit(self: *Self) void {
     switch (self.vmode) {
         .s => {},
-        .m => |m| {
+        .m => |*m| {
             std.debug.assert(!m.anyCoreThreadSpawned());
 
-            m.slotsDeinit(&self.global_ctx, self.runtime.gpa);
-            self.runtime.gpa.destroy(self.vmode.m.master_ctrl);
+            m.deinit(self.global_ctx, self.runtime.gpa);
         },
     }
 
