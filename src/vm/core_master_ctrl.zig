@@ -11,4 +11,3 @@ pub fn deinit(self: *Self) void {
 pub fn init() Self {
     return .{};
 }
-
