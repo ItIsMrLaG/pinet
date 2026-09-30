@@ -50,13 +50,99 @@ vmode: VMode,
 var available_core_id: u32 = 0;
 
 const VMode = union(enum) {
-    s: void,
-    m: struct {
+    s: Single,
+    m: Multi,
+
+    const Single = void;
+    const Multi = struct {
         master_ctrl: *CoreMasterCtrl,
 
         need_stop_cores: bool = false,
         slots: []SlaveSlot,
-    },
+
+        timer: ActTimer,
+
+        const ActTimer = struct {
+            need: bool,
+            max_ms: i64,
+            start_ms: i64 = 0,
+
+            fn init(comptime timout_opt: ?i64) ActTimer {
+                return if (timout_opt) |timout| {
+                    .{ .max_ms = timout, .configured = true };
+                } else {
+                    .{ .max_ms = 0, .configured = false };
+                };
+            }
+
+            fn start(self: *ActTimer) void {
+                self.start_ms = std.time.milliTimestamp();
+            }
+
+            fn stop(self: *ActTimer) void {
+                self.start_ms = 0;
+            }
+
+            fn reset(self: *ActTimer) void {
+                self.stop();
+                self.start();
+            }
+
+            fn is_timeout(self: *ActTimer) bool {
+                // TODO:(kogora) is milliTimestamp() monotonic?
+                const elapsed_ms: i64 = std.time.milliTimestamp() - self.start_ms;
+                if (elapsed_ms > self.max_ms) {
+                    return false;
+                }
+
+                return true;
+            }
+        };
+
+        const Policy = enum {
+            // TODO:(kogora) add comments
+            all,
+            mb_all,
+            broudcast,
+
+            fn need_next(comptime self: Policy, is_success: bool, timer: ActTimer) bool {
+                return switch (self) {
+                    .all => is_success,
+                    .try_all => is_success or timer.is_timeout(),
+                    .broudcast => true,
+                };
+            }
+        };
+
+        // FIX:(kogora) enhance the msg:
+        /// return null in success case and idx of slot whithout status
+        fn waitUntil(
+            self: *Multi,
+            comptime policy: Policy,
+            state: CoreSlaveCtrl.State,
+        ) ?usize {
+            defer self.timer.stop();
+            var res: ?usize = null;
+
+            next_slot: for (self.slots, 0..self.slots.len) |*slot, idx| {
+                while (true) {
+                    const is_success = slot.ctrl.getState() == state;
+
+                    if (policy.need_next(is_success, self.timer)) {
+                        if (!is_success and res == null) {
+                            res = idx;
+                        }
+
+                        continue :next_slot;
+                    }
+
+                    std.atomic.spinLoopHint();
+                }
+            }
+
+            return res;
+        }
+    };
 };
 
 pub const Config = struct {
@@ -546,21 +632,21 @@ pub fn startCores(self: *Self) !void {
         return;
     }
 
-    std.debug.assert(!self.vmode.m.need_stop_cores);
-    self.vmode.m.need_stop_cores = true;
+    const m: *VMode.Multi = &self.vmode.m;
 
-    const slots = self.vmode.m.slots;
+    std.debug.assert(!m.need_stop_cores);
+    m.need_stop_cores = true;
+
     // TODO:(kogora) create logger for vm and cores
-    std.debug.print("vm: starting {} core(s)\n", .{slots.len});
+    std.debug.print("vm: starting {} core(s)\n", .{m.slots.len});
 
-    for (slots) |*slot| {
-        if (slot.ctrl.getState() != .newborn) {
-            return error.CoreNotNewborn;
-        }
+    if (m.waitUntilAll(.newborn)) |fail_slot_idx| {
+        std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
+        return error.CoreNotNewborn;
     }
 
-             // FIX:(kogora) add api for that
-    errdefer for (slots) |*slot| {
+    // FIX:(kogora) add api for that
+    errdefer for (m.slots) |*slot| {
         if (slot.thread == null) {
             continue;
         }
@@ -574,14 +660,15 @@ pub fn startCores(self: *Self) !void {
         slot.thread = null;
     };
 
-    for (slots) |*slot| {
+    for (m.slots) |*slot| {
         slot.thread = try std.Thread.spawn(.{}, Core.runEquations, .{&slot.core});
     }
 
     // TODO:(kogora) add timeout
-    for (slots) |*slot| {
-        while (slot.ctrl.getState() != .applicant) {
-            std.atomic.spinLoopHint();
+    for (m.slots) |*slot| {
+        if (m.waitUntilAll(.newborn)) |fail_slot_idx| {
+            std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
+            return error.CoreNotNewborn;
         }
         std.debug.print("vm: core-{} is applicant\n", .{slot.core.id.slave});
     }
