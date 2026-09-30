@@ -68,11 +68,10 @@ const VMode = union(enum) {
             start_ms: i64 = 0,
 
             fn init(comptime timout_opt: ?i64) ActTimer {
-                return if (timout_opt) |timout| {
-                    .{ .max_ms = timout, .configured = true };
-                } else {
-                    .{ .max_ms = 0, .configured = false };
-                };
+                return if (timout_opt) |timout|
+                    .{ .need = true, .max_ms = timout }
+                else
+                    .{ .need = false, .max_ms = 0 };
             }
 
             fn start(self: *ActTimer) void {
@@ -108,7 +107,7 @@ const VMode = union(enum) {
             fn need_next(comptime self: Policy, is_success: bool, timer: ActTimer) bool {
                 return switch (self) {
                     .all => is_success,
-                    .try_all => is_success or timer.is_timeout(),
+                    .mb_all => is_success or timer.is_timeout(),
                     .broudcast => true,
                 };
             }
@@ -119,17 +118,18 @@ const VMode = union(enum) {
         fn waitUntil(
             self: *Multi,
             comptime policy: Policy,
-            state: CoreSlaveCtrl.State,
+            context: anytype,
+            comptime is_success: fn (*SlaveSlot, @TypeOf(context)) bool,
         ) ?usize {
             defer self.timer.stop();
             var res: ?usize = null;
 
-            next_slot: for (self.slots, 0..self.slots.len) |*slot, idx| {
+            next_slot: for (self.slots, 0..) |*slot, idx| {
                 while (true) {
-                    const is_success = slot.ctrl.getState() == state;
+                    const success = is_success(slot, context);
 
-                    if (policy.need_next(is_success, self.timer)) {
-                        if (!is_success and res == null) {
+                    if (policy.need_next(success, self.timer)) {
+                        if (!success and res == null) {
                             res = idx;
                         }
 
@@ -198,6 +198,24 @@ pub const SlaveSlot = struct {
         };
     }
 };
+
+fn stateReached(slot: *SlaveSlot, state: CoreSlaveCtrl.State) bool {
+    return slot.ctrl.getState() == state;
+}
+
+fn sigSent(slot: *SlaveSlot, sig: CtrlSig) bool {
+    return slot.ch.trySetFlag(sig);
+}
+
+fn waitUntilSlot(
+    slot: *SlaveSlot,
+    context: anytype,
+    comptime is_success: fn (*SlaveSlot, @TypeOf(context)) bool,
+) void {
+    while (!is_success(slot, context)) {
+        std.atomic.spinLoopHint();
+    }
+}
 
 pub const GlobalCtx = struct {
     agent_heap: Memory.Heap(Agent),
@@ -422,6 +440,7 @@ pub fn init(runtime: *Runtime, cfg: Config) !Self {
             vmode = .{ .m = .{
                 .slots = slots,
                 .master_ctrl = master_ctrl,
+                .timer = .init(null),
             } };
         },
     }
@@ -640,21 +659,17 @@ pub fn startCores(self: *Self) !void {
     // TODO:(kogora) create logger for vm and cores
     std.debug.print("vm: starting {} core(s)\n", .{m.slots.len});
 
-    if (m.waitUntilAll(.newborn)) |fail_slot_idx| {
+    if (m.waitUntil(.all, CoreSlaveCtrl.State.newborn, stateReached)) |fail_slot_idx| {
         std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
         return error.CoreNotNewborn;
     }
 
-    // FIX:(kogora) add api for that
     errdefer for (m.slots) |*slot| {
         if (slot.thread == null) {
             continue;
         }
 
-        // FIX:(kogora) add api for that
-        while (!slot.ch.trySetFlag(.kill_sig)) {
-            std.atomic.spinLoopHint();
-        }
+        waitUntilSlot(slot, CtrlSig.kill_sig, sigSent);
 
         slot.thread.?.join();
         slot.thread = null;
@@ -666,7 +681,7 @@ pub fn startCores(self: *Self) !void {
 
     // TODO:(kogora) add timeout
     for (m.slots) |*slot| {
-        if (m.waitUntilAll(.newborn)) |fail_slot_idx| {
+        if (m.waitUntil(.all, CoreSlaveCtrl.State.applicant, stateReached)) |fail_slot_idx| {
             std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
             return error.CoreNotNewborn;
         }
