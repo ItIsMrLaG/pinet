@@ -39,6 +39,8 @@ const EquationUnnormalized = Types.EquationUnnormalized;
 const Core = @This();
 const Self = Core;
 
+const log = std.log.scoped(.core);
+
 const number_of_registers = 256;
 
 id: CoreId,
@@ -260,13 +262,13 @@ inline fn runEquationsSlave(c: *Core) !void {
                     std.debug.assert(ctrl.sig.? == .stop_sig);
                     try ctrl.responsSig();
 
-                    std.debug.print("core-{} is an applicant (from sig)", .{c.id});
+                    log.debug("core-{} is an applicant (from sig)", .{c.id.slave});
                 }
 
                 noop();
             },
             .goner => {
-                std.debug.print("core-{} is a goner", .{c.id});
+                log.debug("core-{} is a goner", .{c.id.slave});
                 break :live;
             },
             .corpse, .newborn => unreachable,

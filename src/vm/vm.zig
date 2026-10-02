@@ -41,6 +41,8 @@ pub const normalizeEquation = Normalize.normalizeEquation;
 const VM = @This();
 const Self = VM;
 
+const log = std.log.scoped(.vm);
+
 const getUser = "getUser";
 
 cfg: Config,
@@ -119,8 +121,7 @@ const VMode = union(enum) {
             gpa: std.mem.Allocator,
         ) void {
             for (slots) |*slot| {
-                global_ctx.destroyLocal(slot.core.local_ctx, gpa);
-                slot.ch.ch.destroy(gpa);
+                slot.deinit(global_ctx, gpa);
             }
 
             gpa.free(slots);
@@ -135,12 +136,18 @@ const VMode = union(enum) {
             const slots: []Slot = try gpa.alloc(Slot, slots_cnt);
             errdefer gpa.free(slots);
 
+            // Only the first `inited_cnt` slots own resources.
+            var inited_cnt: usize = 0;
+            errdefer for (slots[0..inited_cnt]) |*slot| {
+                slot.deinit(global_ctx, gpa);
+            };
+
             for (slots) |*slot| {
-                // FIX:(kogora) if error => mem leak now
                 const ch = try CtrlCh.create(gpa);
                 const ctx = global_ctx.createLocal(gpa);
 
                 slot.init(CoreMode.multiThread, available_core_id, ch, runtime, ctx);
+                inited_cnt += 1;
 
                 available_core_id += 1;
             }
@@ -280,7 +287,7 @@ const VMode = union(enum) {
                 return .{ false, fail_slot_idx };
             }
 
-            if (self.waitUntil(.{}, Slot.sigReceive, policy)) |fail_slot_idx| {
+            if (self.waitUntil({}, Slot.sigReceive, policy)) |fail_slot_idx| {
                 return .{ true, fail_slot_idx };
             }
 
@@ -304,10 +311,17 @@ const VMode = union(enum) {
         }
 
         fn killCoreThreads(self: *Multi) void {
-            const res_opt = self.processSig(CtrlSig.kill_sig, .next_on_fail);
-            if (res_opt) |res| {
-                std.debug.print("<TODO> msg (fatal need kill) .{} .{}", res[0], res[1]);
-                @panic("<TODO> msg (fatal)");
+            if (self.processSig(CtrlSig.kill_sig, .next_on_fail)) |res| {
+                const is_sent, const fail_slot_idx = res;
+                const core_id = self.slots[fail_slot_idx].rawId();
+
+                if (is_sent) {
+                    log.err("core-{}: kill_sig was not processed (denied or no thread)", .{core_id});
+                } else {
+                    log.err("core-{}: failed to send kill_sig (no thread or timeout)", .{core_id});
+                }
+
+                @panic("vm: unable to kill core threads");
             }
 
             for (self.slots) |*slot| {
@@ -397,17 +411,33 @@ pub const Slot = struct {
             return .fail;
         }
 
-        const res = try slot.ch.tryClearFlag() catch {
-            @panic("TODO <msg>");
-        };
+        // Read first: tryClearFlag() would cancel a still-flagged signal.
+        const state: CtrlChState = slot.ch.readFlag()[1];
+        switch (state) {
+            .flagged, .received => return .retry,
+            .processed, .denied => {},
+            .empty => {
+                log.err("core-{}: control channel is empty while waiting for an answer", .{slot.rawId()});
+                @panic("vm: lost signal answer");
+            },
+        }
 
-        const state: CtrlChState = res[1];
-        return switch (state) {
-            .flagged, .received => .retry,
-            .processed => .success,
-            .denied => .fail,
-            .empty => @panic("TODO <msg>"),
+        const cleared, _ = slot.ch.tryClearFlag() catch |err| {
+            log.err("core-{}: failed to clear control channel: {s}", .{ slot.rawId(), @errorName(err) });
+            @panic("vm: corrupted control channel");
         };
+        std.debug.assert(cleared);
+
+        return if (state == .processed) .success else .fail;
+    }
+
+    fn rawId(slot: *const Slot) u32 {
+        return slot.core.id.slave;
+    }
+
+    fn deinit(slot: *Slot, global_ctx: GlobalCtx, gpa: std.mem.Allocator) void {
+        global_ctx.destroyLocal(slot.core.local_ctx, gpa);
+        slot.ch.ch.destroy(gpa);
     }
 };
 
@@ -806,21 +836,22 @@ pub fn startCores(self: *Self) !void {
 
     const m: *VMode.Multi = &self.vmode.m;
 
-    // TODO:(kogora) create logger for vm and cores
-    std.debug.print("vm: starting {} core(s)\n", .{m.slots.len});
+    log.info("starting {} core(s)", .{m.slots.len});
 
-    if (m.waitUntil(.newborn, Slot.stateIs, .next_on_fail)) |fail_slot_idx| {
-        std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
+    if (m.waitUntil(SlaveCtrlState.newborn, Slot.stateIs, .next_on_fail)) |fail_slot_idx| {
+        log.err("core-{}: is not newborn before start", .{m.slots[fail_slot_idx].rawId()});
         return error.CoreNotNewborn;
     }
 
     try m.spawnCoreThreads();
     errdefer m.killCoreThreads();
 
-    if (m.waitUntil(.applicant, Slot.stateReached, .exit_on_fail)) |fail_slot_idx| {
-        std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
+    if (m.waitUntil(SlaveCtrlState.applicant, Slot.stateReached, .exit_on_fail)) |fail_slot_idx| {
+        log.err("core-{}: did not become an applicant", .{m.slots[fail_slot_idx].rawId()});
         return error.CoreNotApplicant;
     }
+
+    log.info("{} core(s) started", .{m.slots.len});
 }
 
 pub fn stopCores(self: *Self) void {
@@ -829,6 +860,7 @@ pub fn stopCores(self: *Self) void {
     }
 
     const m: *VMode.Multi = &self.vmode.m;
+    log.info("stopping {} core(s)", .{m.slots.len});
     m.killCoreThreads();
 }
 
