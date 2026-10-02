@@ -30,6 +30,7 @@ pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
 pub const SlaveCtrlState = @import("core_slave_ctrl.zig").State;
 
 pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
+pub const CtrlChState = @import("flag_channel.zig").State;
 
 pub const Builtin = @import("builtin.zig");
 pub const Importer = @import("importer.zig");
@@ -102,7 +103,7 @@ const VMode = union(enum) {
         };
 
         const FailPolicy = enum {
-            retry_on_fail,
+            next_on_fail,
             exit_on_fail,
         };
 
@@ -222,9 +223,9 @@ const VMode = union(enum) {
 
         fn waitUntil(
             self: *Multi,
-            comptime policy: FailPolicy,
             context: anytype,
             comptime act: fn (*Slot, @TypeOf(context)) Result,
+            comptime policy: FailPolicy,
         ) ?usize {
             var in_work = std.bit_set.IntegerBitSet(max_slot_cnt).initEmpty();
             var first_fail_idx: ?usize = null;
@@ -241,16 +242,14 @@ const VMode = union(enum) {
                     }
 
                     var res = act(slot, context);
-                    switch (res) {
-                        .success, .fail => {},
-                        .retry => {
-                            if (!slot_act.timer.is_start) {
-                                slot_act.timer.start();
-                            } else if (slot_act.timer.is_timeout()) {
-                                res = .fail;
-                            }
-                        },
+                    if (res == .retry) {
+                        if (!slot_act.timer.is_start) {
+                            slot_act.timer.start();
+                        } else if (slot_act.timer.is_timeout()) {
+                            res = .fail;
+                        }
                     }
+
                     slot_act.res = res;
 
                     if (res == .retry) {
@@ -258,6 +257,7 @@ const VMode = union(enum) {
                         continue :next_slot;
                     }
 
+                    // .success or .fail
                     in_work.unset(idx);
 
                     if (res == .fail) {
@@ -273,6 +273,18 @@ const VMode = union(enum) {
             }
 
             return first_fail_idx;
+        }
+
+        fn processSig(self: *Multi, sig: CtrlSig, comptime policy: FailPolicy) ?struct { bool, usize } {
+            if (self.waitUntil(sig, Slot.sigSent, policy)) |fail_slot_idx| {
+                return .{ false, fail_slot_idx };
+            }
+
+            if (self.waitUntil(.{}, Slot.sigReceive, policy)) |fail_slot_idx| {
+                return .{ true, fail_slot_idx };
+            }
+
+            return null;
         }
 
         fn anyCoreThreadSpawned(self: *Multi) bool {
@@ -292,7 +304,11 @@ const VMode = union(enum) {
         }
 
         fn killCoreThreads(self: *Multi) void {
-            _ = self.waitUntil(.retry_on_fail, CtrlSig.kill_sig, Slot.sigSent);
+            const res_opt = self.processSig(CtrlSig.kill_sig, .next_on_fail);
+            if (res_opt) |res| {
+                std.debug.print("<TODO> msg (fatal need kill) .{} .{}", res[0], res[1]);
+                @panic("<TODO> msg (fatal)");
+            }
 
             for (self.slots) |*slot| {
                 if (slot.thread) |thread| {
@@ -368,15 +384,30 @@ pub const Slot = struct {
         return if (slot.ctrl.getState() == state) .success else .retry;
     }
 
-    /// Slots without a running thread are skipped (nobody would answer).
     fn sigSent(slot: *Slot, sig: CtrlSig) Result {
         if (slot.thread == null) {
-            return .success;
+            return .fail;
         }
 
         return if (slot.ch.trySetFlag(sig)) .success else .retry;
-        // FIX:(kogora) i should send and get success answer
-        // now it doesnt work
+    }
+
+    fn sigReceive(slot: *Slot, _: void) Result {
+        if (slot.thread == null) {
+            return .fail;
+        }
+
+        const res = try slot.ch.tryClearFlag() catch {
+            @panic("TODO <msg>");
+        };
+
+        const state: CtrlChState = res[1];
+        return switch (state) {
+            .flagged, .received => .retry,
+            .processed => .success,
+            .denied => .fail,
+            .empty => @panic("TODO <msg>"),
+        };
     }
 };
 
@@ -778,7 +809,7 @@ pub fn startCores(self: *Self) !void {
     // TODO:(kogora) create logger for vm and cores
     std.debug.print("vm: starting {} core(s)\n", .{m.slots.len});
 
-    if (m.waitUntil(.retry_on_fail, SlaveCtrlState.newborn, Slot.stateIs)) |fail_slot_idx| {
+    if (m.waitUntil(.newborn, Slot.stateIs, .next_on_fail)) |fail_slot_idx| {
         std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
         return error.CoreNotNewborn;
     }
@@ -786,7 +817,7 @@ pub fn startCores(self: *Self) !void {
     try m.spawnCoreThreads();
     errdefer m.killCoreThreads();
 
-    if (m.waitUntil(.exit_on_fail, SlaveCtrlState.applicant, Slot.stateReached)) |fail_slot_idx| {
+    if (m.waitUntil(.applicant, Slot.stateReached, .exit_on_fail)) |fail_slot_idx| {
         std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
         return error.CoreNotApplicant;
     }
@@ -802,6 +833,9 @@ pub fn stopCores(self: *Self) void {
 }
 
 pub fn runProgram(self: *Self, program: AST.Program) !void {
+    try self.startCores();
+    defer self.stopCores();
+
     for (program.statements) |statement| {
         switch (statement.val) {
             .print_stmt => |name_to_print| try self.printStmt(name_to_print),
