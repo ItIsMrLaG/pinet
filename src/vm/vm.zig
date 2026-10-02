@@ -69,7 +69,7 @@ const VMode = union(enum) {
         gpa: std.mem.Allocator,
         global_ctx: GlobalCtx,
     ) !VMode {
-        const timeout_opt: ?i64 = if (cfg.timeout == 0) null else @intCast(cfg.timeout);
+        const timeout_opt: ?i64 = if (cfg.timeout == 0) null else cfg.timeout;
 
         return .{ .m = try Multi.init(
             timeout_opt,
@@ -350,7 +350,7 @@ pub const Config = struct {
     cores_num: usize,
     heap_size: usize,
 
-    timeout: usize = 0, // TODO:(kogora) support it
+    timeout: u64 = 0, // TODO:(kogora) support it
     warmup: bool = false, // TODO:(kogora) support it
 
     pub fn isValid(cfg: *const Config) !void {
