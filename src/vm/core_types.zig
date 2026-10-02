@@ -14,6 +14,10 @@ pub const CoreRc = enum(u8) {
     Err = 1,
 };
 
+pub const Error = error{
+    NotSupported,
+};
+
 pub const CoreId = union(CoreRole) {
     master: void,
     slave: u32,
@@ -35,7 +39,9 @@ pub const Policy = enum {
 };
 
 pub const ActTimer = struct {
+    is_start: bool = false,
     need: bool,
+
     max_ms: i64,
     io: std.Io,
     start_ts: std.Io.Timestamp = .zero,
@@ -48,10 +54,12 @@ pub const ActTimer = struct {
     }
 
     fn start(self: *ActTimer) void {
+        self.is_start = true;
         self.start_ts = std.Io.Clock.awake.now(self.io);
     }
 
     fn stop(self: *ActTimer) void {
+        self.is_start = true;
         self.start_ts = .zero;
     }
 
@@ -60,7 +68,7 @@ pub const ActTimer = struct {
         self.start();
     }
 
-    fn is_timeout(self: ActTimer) bool {
+    fn is_timeout(self: *ActTimer) bool {
         if (!self.need) {
             return false;
         }

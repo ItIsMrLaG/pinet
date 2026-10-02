@@ -22,8 +22,8 @@ const CoreId = @import("core_types.zig").CoreId;
 const CoreRc = @import("core_types.zig").CoreRc;
 const CoreRole = @import("core_types.zig").CoreRole;
 const CtrlSig = @import("core_types.zig").CtrlSig;
-const Policy = @import("core_types.zig").Policy;
 const ActTimer = @import("core_types.zig").ActTimer;
+const VmError = @import("core_types.zig").Error;
 
 pub const CoreMasterCtrl = @import("core_master_ctrl.zig");
 pub const CoreSlaveCtrl = @import("core_slave_ctrl.zig");
@@ -90,7 +90,30 @@ const VMode = union(enum) {
     const Multi = struct {
         master_ctrl: *CoreMasterCtrl,
         slots: []Slot,
-        timer: ActTimer,
+        slot_acts: []SlotAct,
+
+        const max_slot_cnt = 64;
+
+        const SlotAct = struct {
+            res: ?Result = null,
+            timer: ActTimer,
+
+            fn clear(slot_act: *SlotAct) void {
+                slot_act.res = null;
+                slot_act.timer.stop();
+            }
+        };
+
+        const FailPolicy = enum {
+            retry_on_fail,
+            exit_on_fail,
+        };
+
+        const Result = enum {
+            success,
+            retry,
+            fail,
+        };
 
         fn slotsDeinit(
             slots: []Slot,
@@ -127,6 +150,26 @@ const VMode = union(enum) {
             return slots;
         }
 
+        fn slotActsDeInit(slot_acts: []SlotAct, gpa: std.mem.Allocator) void {
+            gpa.free(slot_acts);
+        }
+
+        fn slotActsInit(
+            gpa: std.mem.Allocator,
+            io: std.Io,
+            slots_cnt: usize,
+            timeout_opt: ?usize,
+        ) ![]SlotAct {
+            const slot_acts: []SlotAct = try gpa.alloc(SlotAct, slots_cnt);
+            errdefer gpa.free(slot_acts);
+
+            for (slot_acts) |*slot_act| {
+                slot_act.* = .{
+                    .timer = ActTimer.init(timeout_opt, io),
+                };
+            }
+        }
+
         fn masterCtrlDeinit(master_ctrl: *CoreMasterCtrl, gpa: std.mem.Allocator) void {
             master_ctrl.deinit();
             gpa.destroy(master_ctrl);
@@ -145,8 +188,9 @@ const VMode = union(enum) {
             global_ctx: GlobalCtx,
             gpa: std.mem.Allocator,
         ) void {
-            slotsDeinit(self.slots, global_ctx, gpa);
             masterCtrlDeinit(self.master_ctrl, gpa);
+            slotActsDeInit(self.slot_acts, global_ctx, gpa);
+            slotsDeinit(self.slots, global_ctx, gpa);
         }
 
         fn init(
@@ -155,51 +199,79 @@ const VMode = union(enum) {
             gpa: std.mem.Allocator,
             runtime: *Runtime,
             global_ctx: GlobalCtx,
+            io: std.Io,
         ) !Multi {
+            if (slot_cnt > Multi.max_slot_cnt) {
+                return VmError.NotSupported;
+            }
+
             const slots = try slotsInit(runtime, global_ctx, slot_cnt, gpa);
             errdefer slotsDeinit(slots, global_ctx, gpa);
+
+            const slot_acts = try slotActsInit(gpa, io, slot_cnt, timout_opt);
+            errdefer slotActsDeInit(slot_acts, global_ctx, gpa);
 
             const master_ctrl = try masterCtrlInit(gpa);
             errdefer masterCtrlDeinit(master_ctrl, gpa);
 
-            const timer = ActTimer.init(timout_opt, runtime.io);
-
             return .{
-                .timer = timer,
                 .slots = slots,
+                .slot_acts = slot_acts,
                 .master_ctrl = master_ctrl,
             };
         }
 
-        // FIX:(kogora) enhance the msg:
-        /// return null in success case and idx of slot whithout status
         fn waitUntil(
             self: *Multi,
-            comptime policy: Policy,
+            comptime policy: FailPolicy,
             context: anytype,
-            comptime is_success: fn (*Slot, @TypeOf(context)) bool,
+            comptime act: fn (*Slot, @TypeOf(context)) Result,
         ) ?usize {
-            var res: ?usize = null;
+            var in_work = std.bit_set.IntegerBitSet(64).initEmpty();
+            var first_fail_idx: ?usize = null;
 
-            next_slot: for (self.slots, 0..) |*slot, idx| {
-                self.timer.reset();
+            for (self.slot_acts, 0..) |*slot_act, idx| {
+                slot_act.clear();
+                in_work.set(idx);
+            }
 
-                while (true) {
-                    const success = is_success(slot, context);
-
-                    if (policy.need_next(success, self.timer)) {
-                        if (!success and res == null) {
-                            res = idx;
-                        }
-
+            while (!in_work.isEmpty()) {
+                next_slot: for (self.slots, self.slot_acts, 0..) |*slot, *slot_act, idx| {
+                    if (!in_work.isSet(idx)) {
                         continue :next_slot;
+                    }
+
+                    slot_act.res = act(slot, context);
+                    switch (slot_act.res) {
+                        .success => in_work.setValue(idx, false),
+                        .fail => {
+                            in_work.setValue(idx, false);
+                            if (first_fail_idx == null) {
+                                first_fail_idx = idx;
+                            }
+                        },
+                        .retry => {
+                            if (!slot_act.timer.is_start) {
+                                slot_act.timer.start();
+                                continue :next_slot;
+                            }
+
+                            if (slot_act.timer.is_timeout()) {
+                                in_work.setValue(idx, false);
+                                slot_act.res = .fail;
+                            }
+                        },
+                    }
+
+                    if (policy == .exit_on_fail and slot_act.res == .fail) {
+                        return first_fail_idx;
                     }
 
                     std.atomic.spinLoopHint();
                 }
             }
 
-            return res;
+            return first_fail_idx;
         }
 
         fn anyCoreThreadSpawned(self: *Multi) bool {
@@ -240,19 +312,18 @@ const VMode = union(enum) {
 };
 
 pub const Config = struct {
-    pub const Error = error{
-        NotSupported,
-    };
-
     cores_num: usize,
     heap_size: usize,
 
     warmup: bool = false,
 
-    pub fn isValid(cfg: *const Config) Error!void {
-        // TODO:(kogora): multithread version
-        if (cfg.cores_num != 1) {
-            return Error.NotSupported;
+    pub fn isValid(cfg: *const Config) !void {
+        if (cfg.cores_num == 0) {
+            return VmError.NotSupported;
+        }
+
+        if (cfg.cores_num > VMode.Multi.max_slot_cnt) {
+            return VmError.NotSupported;
         }
     }
 

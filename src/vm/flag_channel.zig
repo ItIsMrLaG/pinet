@@ -6,6 +6,7 @@ const std = @import("std");
 pub const CtrlSig = @import("core_types.zig").CtrlSig;
 
 pub const CtrlCh = FlagCh(CtrlSig);
+pub const State = enum { empty, flagged, received, processed, denied };
 
 /// Each slot packs a small protocol state machine into the low
 /// `control_bits` bits of a u32, and the caller's own flag payload `T`
@@ -19,9 +20,10 @@ fn FlagCh(comptime T: type) type {
         const Self = @This();
         const Flag = std.atomic.Value(u32);
         const init_value: u32 = 0;
+
+        // FIX:(kogora): implent to flags + method .apply() (copy one to another)
         f: Flag align(std.atomic.cache_line) = Flag.init(init_value),
 
-        pub const State = enum { empty, flagged, received, processed, denied };
         const Mode = enum { master, slave, none };
 
         /// b_flagged, b_received, b_processed, b_denied, b_slave_mode.
