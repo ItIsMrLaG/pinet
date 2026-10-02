@@ -273,7 +273,7 @@ test "create initializes all flags to empty" {
 
     var master = ch.getMaster();
     const r = master.readFlag();
-    try testing.expectEqual(TestCh.State.empty, r[1]);
+    try testing.expectEqual(State.empty, r[1]);
 }
 
 test "master flags, slave receives and processes, master clears" {

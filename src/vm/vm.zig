@@ -42,9 +42,6 @@ const Self = VM;
 
 const getUser = "getUser";
 
-// TODO:(kogora) comptime param
-const global_policy = Policy.all;
-
 cfg: Config,
 
 global_ctx: GlobalCtx,
@@ -70,7 +67,7 @@ const VMode = union(enum) {
         global_ctx: GlobalCtx,
     ) !VMode {
         // TODO:(kogora) support timout_opt in Config (now it is null)
-        return .{ .m = try Multi.init(null, cfg.cores_num, gpa, runtime, global_ctx) };
+        return .{ .m = try Multi.init(null, cfg.cores_num, gpa, runtime, global_ctx, runtime.io) };
     }
 
     fn deinit(
@@ -158,7 +155,7 @@ const VMode = union(enum) {
             gpa: std.mem.Allocator,
             io: std.Io,
             slots_cnt: usize,
-            timeout_opt: ?usize,
+            timeout_opt: ?i64,
         ) ![]SlotAct {
             const slot_acts: []SlotAct = try gpa.alloc(SlotAct, slots_cnt);
             errdefer gpa.free(slot_acts);
@@ -168,6 +165,8 @@ const VMode = union(enum) {
                     .timer = ActTimer.init(timeout_opt, io),
                 };
             }
+
+            return slot_acts;
         }
 
         fn masterCtrlDeinit(master_ctrl: *CoreMasterCtrl, gpa: std.mem.Allocator) void {
@@ -189,7 +188,7 @@ const VMode = union(enum) {
             gpa: std.mem.Allocator,
         ) void {
             masterCtrlDeinit(self.master_ctrl, gpa);
-            slotActsDeInit(self.slot_acts, global_ctx, gpa);
+            slotActsDeInit(self.slot_acts, gpa);
             slotsDeinit(self.slots, global_ctx, gpa);
         }
 
@@ -209,7 +208,7 @@ const VMode = union(enum) {
             errdefer slotsDeinit(slots, global_ctx, gpa);
 
             const slot_acts = try slotActsInit(gpa, io, slot_cnt, timout_opt);
-            errdefer slotActsDeInit(slot_acts, global_ctx, gpa);
+            errdefer slotActsDeInit(slot_acts, gpa);
 
             const master_ctrl = try masterCtrlInit(gpa);
             errdefer masterCtrlDeinit(master_ctrl, gpa);
@@ -227,7 +226,7 @@ const VMode = union(enum) {
             context: anytype,
             comptime act: fn (*Slot, @TypeOf(context)) Result,
         ) ?usize {
-            var in_work = std.bit_set.IntegerBitSet(64).initEmpty();
+            var in_work = std.bit_set.IntegerBitSet(max_slot_cnt).initEmpty();
             var first_fail_idx: ?usize = null;
 
             for (self.slot_acts, 0..) |*slot_act, idx| {
@@ -235,39 +234,41 @@ const VMode = union(enum) {
                 in_work.set(idx);
             }
 
-            while (!in_work.isEmpty()) {
+            while (in_work.count() != 0) {
                 next_slot: for (self.slots, self.slot_acts, 0..) |*slot, *slot_act, idx| {
                     if (!in_work.isSet(idx)) {
                         continue :next_slot;
                     }
 
-                    slot_act.res = act(slot, context);
-                    switch (slot_act.res) {
-                        .success => in_work.setValue(idx, false),
-                        .fail => {
-                            in_work.setValue(idx, false);
-                            if (first_fail_idx == null) {
-                                first_fail_idx = idx;
-                            }
-                        },
+                    var res = act(slot, context);
+                    switch (res) {
+                        .success, .fail => {},
                         .retry => {
                             if (!slot_act.timer.is_start) {
                                 slot_act.timer.start();
-                                continue :next_slot;
-                            }
-
-                            if (slot_act.timer.is_timeout()) {
-                                in_work.setValue(idx, false);
-                                slot_act.res = .fail;
+                            } else if (slot_act.timer.is_timeout()) {
+                                res = .fail;
                             }
                         },
                     }
+                    slot_act.res = res;
 
-                    if (policy == .exit_on_fail and slot_act.res == .fail) {
-                        return first_fail_idx;
+                    if (res == .retry) {
+                        std.atomic.spinLoopHint();
+                        continue :next_slot;
                     }
 
-                    std.atomic.spinLoopHint();
+                    in_work.unset(idx);
+
+                    if (res == .fail) {
+                        if (first_fail_idx == null) {
+                            first_fail_idx = idx;
+                        }
+
+                        if (policy == .exit_on_fail) {
+                            return first_fail_idx;
+                        }
+                    }
                 }
             }
 
@@ -290,22 +291,14 @@ const VMode = union(enum) {
             }
         }
 
-        fn killCoreThreads(self: *Multi, comptime policy: Policy) void {
+        fn killCoreThreads(self: *Multi) void {
+            _ = self.waitUntil(.retry_on_fail, CtrlSig.kill_sig, Slot.sigSent);
+
             for (self.slots) |*slot| {
-                if (slot.thread == null) {
-                    continue;
+                if (slot.thread) |thread| {
+                    thread.join();
+                    slot.thread = null;
                 }
-
-                self.timer.reset();
-                _ = slot.waitUntilSlot(
-                    policy,
-                    CtrlSig.kill_sig,
-                    Slot.sigSent,
-                    &self.timer,
-                );
-
-                slot.thread.?.join();
-                slot.thread = null;
             }
         }
     };
@@ -363,29 +356,25 @@ pub const Slot = struct {
         };
     }
 
-    fn waitUntilSlot(
-        slot: *Slot,
-        comptime policy: Policy,
-        context: anytype,
-        comptime is_success: fn (*Slot, @TypeOf(context)) bool,
-        timer: *ActTimer,
-    ) bool {
-        while (true) {
-            const success = is_success(slot, context);
-            if (policy.need_next(success, timer.*)) {
-                return success;
-            }
+    const Result = VMode.Multi.Result;
 
-            std.atomic.spinLoopHint();
+    /// Checks the state once: no retries.
+    fn stateIs(slot: *Slot, state: CoreSlaveCtrl.State) Result {
+        return if (slot.ctrl.getState() == state) .success else .fail;
+    }
+
+    /// Retries until the state is reached (or the slot's timer expires).
+    fn stateReached(slot: *Slot, state: CoreSlaveCtrl.State) Result {
+        return if (slot.ctrl.getState() == state) .success else .retry;
+    }
+
+    /// Slots without a running thread are skipped (nobody would answer).
+    fn sigSent(slot: *Slot, sig: CtrlSig) Result {
+        if (slot.thread == null) {
+            return .success;
         }
-    }
 
-    fn stateReached(slot: *Slot, state: CoreSlaveCtrl.State) bool {
-        return slot.ctrl.getState() == state;
-    }
-
-    fn sigSent(slot: *Slot, sig: CtrlSig) bool {
-        return slot.ch.trySetFlag(sig);
+        return if (slot.ch.trySetFlag(sig)) .success else .retry;
         // FIX:(kogora) i should send and get success answer
         // now it doesnt work
     }
@@ -789,17 +778,17 @@ pub fn startCores(self: *Self) !void {
     // TODO:(kogora) create logger for vm and cores
     std.debug.print("vm: starting {} core(s)\n", .{m.slots.len});
 
-    if (m.waitUntil(.broudcast, SlaveCtrlState.newborn, Slot.stateReached)) |fail_slot_idx| {
+    if (m.waitUntil(.retry_on_fail, SlaveCtrlState.newborn, Slot.stateIs)) |fail_slot_idx| {
         std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
         return error.CoreNotNewborn;
     }
 
     try m.spawnCoreThreads();
-    errdefer m.killCoreThreads(global_policy);
+    errdefer m.killCoreThreads();
 
-    if (m.waitUntil(.try_all, SlaveCtrlState.applicant, Slot.stateReached)) |fail_slot_idx| {
+    if (m.waitUntil(.exit_on_fail, SlaveCtrlState.applicant, Slot.stateReached)) |fail_slot_idx| {
         std.debug.print("vm: <TODO msg> {} core\n", .{fail_slot_idx});
-        return error.CoreNotNewborn;
+        return error.CoreNotApplicant;
     }
 }
 
@@ -809,7 +798,7 @@ pub fn stopCores(self: *Self) void {
     }
 
     const m: *VMode.Multi = &self.vmode.m;
-    m.killCoreThreads(global_policy);
+    m.killCoreThreads();
 }
 
 pub fn runProgram(self: *Self, program: AST.Program) !void {

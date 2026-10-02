@@ -23,21 +23,6 @@ pub const CoreId = union(CoreRole) {
     slave: u32,
 };
 
-pub const Policy = enum {
-    // TODO:(kogora) add comments
-    all,
-    try_all,
-    broudcast,
-
-    pub fn need_next(comptime self: Policy, is_success: bool, timer: ActTimer) bool {
-        return switch (self) {
-            .all => is_success,
-            .try_all => is_success or timer.is_timeout(),
-            .broudcast => true,
-        };
-    }
-};
-
 pub const ActTimer = struct {
     is_start: bool = false,
     need: bool,
@@ -53,13 +38,13 @@ pub const ActTimer = struct {
             .{ .need = false, .max_ms = 0, .io = io };
     }
 
-    fn start(self: *ActTimer) void {
+    pub fn start(self: *ActTimer) void {
         self.is_start = true;
         self.start_ts = std.Io.Clock.awake.now(self.io);
     }
 
-    fn stop(self: *ActTimer) void {
-        self.is_start = true;
+    pub fn stop(self: *ActTimer) void {
+        self.is_start = false;
         self.start_ts = .zero;
     }
 
@@ -68,7 +53,7 @@ pub const ActTimer = struct {
         self.start();
     }
 
-    fn is_timeout(self: *ActTimer) bool {
+    pub fn is_timeout(self: *ActTimer) bool {
         if (!self.need) {
             return false;
         }
