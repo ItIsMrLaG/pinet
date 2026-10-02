@@ -69,7 +69,7 @@ const VMode = union(enum) {
         gpa: std.mem.Allocator,
         global_ctx: GlobalCtx,
     ) !VMode {
-        const timeout_opt = if (cfg.timeout == 0) null else cfg.timeout;
+        const timeout_opt: ?i64 = if (cfg.timeout == 0) null else @intCast(cfg.timeout);
 
         return .{ .m = try Multi.init(
             timeout_opt,
@@ -329,8 +329,7 @@ const VMode = union(enum) {
 
         fn killCoreThreads(self: *Multi) void {
             if (self.processSig(CtrlSig.kill_sig, .next_on_fail)) |res| {
-                const fail_slot_idx = res;
-                const is_sent = res;
+                const is_sent, const fail_slot_idx = res;
                 const core_id = self.slots[fail_slot_idx].rawId();
 
                 if (is_sent) {
