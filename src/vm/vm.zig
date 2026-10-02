@@ -69,8 +69,16 @@ const VMode = union(enum) {
         gpa: std.mem.Allocator,
         global_ctx: GlobalCtx,
     ) !VMode {
-        // TODO:(kogora) support timout_opt in Config (now it is null)
-        return .{ .m = try Multi.init(null, cfg.cores_num, gpa, runtime, global_ctx, runtime.io) };
+        const timeout_opt = if (cfg.timeout == 0) null else cfg.timeout;
+
+        return .{ .m = try Multi.init(
+            timeout_opt,
+            cfg.cores_num,
+            gpa,
+            runtime,
+            global_ctx,
+            runtime.io,
+        ) };
     }
 
     fn deinit(
@@ -310,9 +318,19 @@ const VMode = union(enum) {
             }
         }
 
+        fn killCoreThreadsUnsafe(self: *Multi) void {
+            for (self.slots) |*slot| {
+                if (slot.thread) |thread| {
+                    thread.join();
+                    slot.thread = null;
+                }
+            }
+        }
+
         fn killCoreThreads(self: *Multi) void {
             if (self.processSig(CtrlSig.kill_sig, .next_on_fail)) |res| {
-                const is_sent, const fail_slot_idx = res;
+                const fail_slot_idx = res;
+                const is_sent = res;
                 const core_id = self.slots[fail_slot_idx].rawId();
 
                 if (is_sent) {
@@ -324,12 +342,7 @@ const VMode = union(enum) {
                 @panic("vm: unable to kill core threads");
             }
 
-            for (self.slots) |*slot| {
-                if (slot.thread) |thread| {
-                    thread.join();
-                    slot.thread = null;
-                }
-            }
+            self.killCoreThreadsUnsafe();
         }
     };
 };
@@ -338,7 +351,8 @@ pub const Config = struct {
     cores_num: usize,
     heap_size: usize,
 
-    warmup: bool = false,
+    timeout: usize = 0, // TODO:(kogora) support it
+    warmup: bool = false, // TODO:(kogora) support it
 
     pub fn isValid(cfg: *const Config) !void {
         if (cfg.cores_num == 0) {
@@ -844,7 +858,7 @@ pub fn startCores(self: *Self) !void {
     }
 
     try m.spawnCoreThreads();
-    errdefer m.killCoreThreads();
+    errdefer m.killCoreThreadsUnsafe();
 
     if (m.waitUntil(SlaveCtrlState.applicant, Slot.stateReached, .exit_on_fail)) |fail_slot_idx| {
         log.err("core-{}: did not become an applicant", .{m.slots[fail_slot_idx].rawId()});
