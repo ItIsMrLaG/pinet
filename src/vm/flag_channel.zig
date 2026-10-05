@@ -7,6 +7,7 @@ pub const CtrlSig = @import("core_types.zig").CtrlSig;
 
 pub const CtrlCh = FlagCh(CtrlSig);
 pub const State = enum { empty, flagged, received, processed, denied };
+pub const Role = enum { master, slave, none };
 
 /// Each slot packs a small protocol state machine into the low
 /// `control_bits` bits of a u32, and the caller's own flag payload `T`
@@ -23,8 +24,6 @@ fn FlagCh(comptime T: type) type {
 
         // FIX:(kogora): implent to flags + method .apply() (copy one to another)
         f: Flag align(std.atomic.cache_line) = Flag.init(init_value),
-
-        const Mode = enum { master, slave, none };
 
         /// b_flagged, b_received, b_processed, b_denied, b_slave_mode.
         const control_bits = 5;
@@ -57,7 +56,7 @@ fn FlagCh(comptime T: type) type {
             const m_control_mask: u32 = m_state_mask | m_slave_mode;
             const m_value_mask: u32 = ~m_control_mask;
 
-            fn getMask(comptime state: State, comptime mode: Mode) u32 {
+            fn getMask(comptime state: State, comptime mode: Role) u32 {
                 const m: u32 = switch (state) {
                     .flagged => m_flagged,
                     .received => m_received,
@@ -73,9 +72,9 @@ fn FlagCh(comptime T: type) type {
                 };
             }
 
-            fn extractMode(val: u32) struct { Mode, u32 } {
+            fn extractMode(val: u32) struct { Role, u32 } {
                 const new_val = val & m_state_mask;
-                const mode: Mode = if (val & m_slave_mode != 0)
+                const mode: Role = if (val & m_slave_mode != 0)
                     .slave
                 else if (new_val & m_flagged != 0)
                     .master
@@ -106,7 +105,7 @@ fn FlagCh(comptime T: type) type {
             }
         };
 
-        fn peerMode(comptime mode: Mode) Mode {
+        fn peerMode(comptime mode: Role) Role {
             return switch (mode) {
                 .master => .slave,
                 .slave => .master,
@@ -114,7 +113,7 @@ fn FlagCh(comptime T: type) type {
             };
         }
 
-        fn ChUser(comptime mode: Mode) type {
+        fn ChUser(comptime mode: Role) type {
             return struct {
                 const User = @This();
 
@@ -174,7 +173,7 @@ fn FlagCh(comptime T: type) type {
                     }
                 }
 
-                pub fn readFlag(self: *User) struct { Mode, State, T } {
+                pub fn readFlag(self: *User) struct { Role, State, T } {
                     const cur = self.ch.f.load(.acquire);
 
                     const r = Bit.extractMode(cur);

@@ -31,6 +31,7 @@ pub const SlaveCtrlState = @import("core_slave_ctrl.zig").State;
 
 pub const CtrlCh = @import("flag_channel.zig").CtrlCh;
 pub const CtrlChState = @import("flag_channel.zig").State;
+pub const CtrlChRole = @import("flag_channel.zig").Role;
 
 pub const Builtin = @import("builtin.zig");
 pub const Importer = @import("importer.zig");
@@ -238,6 +239,28 @@ const VMode = union(enum) {
 
         fn waitUntil(
             self: *Multi,
+            slot_idx: usize,
+            context: anytype,
+            comptime T: type,
+            comptime act: fn (*Slot, @TypeOf(context)) struct { Result, T },
+        ) struct { Result, T } {
+            const slot: *Slot = &self.slots[slot_idx];
+
+            retry: while (true) {
+                const act_res = act(slot, context);
+
+                const res = act_res[0];
+                switch (res) {
+                    .retry => continue :retry,
+                    .success, .fail => return act_res,
+                }
+            }
+
+            unreachable;
+        }
+
+        fn waitUntilAll(
+            self: *Multi,
             context: anytype,
             comptime act: fn (*Slot, @TypeOf(context)) Result,
             comptime policy: FailPolicy,
@@ -290,12 +313,16 @@ const VMode = union(enum) {
             return first_fail_idx;
         }
 
-        fn processSig(self: *Multi, sig: CtrlSig, comptime policy: FailPolicy) ?struct { bool, usize } {
-            if (self.waitUntil(sig, Slot.sigSent, policy)) |fail_slot_idx| {
+        fn processSigAll(
+            self: *Multi,
+            sig: CtrlSig,
+            comptime policy: FailPolicy,
+        ) ?struct { bool, usize } {
+            if (self.waitUntilAll(sig, Slot.sigSent, policy)) |fail_slot_idx| {
                 return .{ false, fail_slot_idx };
             }
 
-            if (self.waitUntil({}, Slot.sigReceive, policy)) |fail_slot_idx| {
+            if (self.waitUntilAll({}, Slot.sigReceive, policy)) |fail_slot_idx| {
                 return .{ true, fail_slot_idx };
             }
 
@@ -328,7 +355,7 @@ const VMode = union(enum) {
         }
 
         fn killCoreThreads(self: *Multi) void {
-            if (self.processSig(CtrlSig.kill_sig, .next_on_fail)) |res| {
+            if (self.processSigAll(CtrlSig.kill_sig, .next_on_fail)) |res| {
                 const is_sent, const fail_slot_idx = res;
                 const core_id = self.slots[fail_slot_idx].rawId();
 
@@ -350,7 +377,7 @@ pub const Config = struct {
     cores_num: usize,
     heap_size: usize,
 
-    timeout: u64 = 0, // TODO:(kogora) support it
+    timeout: i64 = 0, // TODO:(kogora) support it
     warmup: bool = false, // TODO:(kogora) support it
 
     pub fn isValid(cfg: *const Config) !void {
@@ -424,8 +451,15 @@ pub const Slot = struct {
             return .fail;
         }
 
-        // Read first: tryClearFlag() would cancel a still-flagged signal.
-        const state: CtrlChState = slot.ch.readFlag()[1];
+        const res = slot.ch.readFlag();
+
+        // FIX:(kogora) mb return but how...?
+        const role: CtrlChRole = res[0];
+        if (role != .master) {
+            return .fail;
+        }
+
+        const state: CtrlChState = res[1];
         switch (state) {
             .flagged, .received => return .retry,
             .processed, .denied => {},
@@ -851,7 +885,7 @@ pub fn startCores(self: *Self) !void {
 
     log.info("starting {} core(s)", .{m.slots.len});
 
-    if (m.waitUntil(SlaveCtrlState.newborn, Slot.stateIs, .next_on_fail)) |fail_slot_idx| {
+    if (m.waitUntilAll(SlaveCtrlState.newborn, Slot.stateIs, .next_on_fail)) |fail_slot_idx| {
         log.err("core-{}: is not newborn before start", .{m.slots[fail_slot_idx].rawId()});
         return error.CoreNotNewborn;
     }
@@ -859,7 +893,7 @@ pub fn startCores(self: *Self) !void {
     try m.spawnCoreThreads();
     errdefer m.killCoreThreadsUnsafe();
 
-    if (m.waitUntil(SlaveCtrlState.applicant, Slot.stateReached, .exit_on_fail)) |fail_slot_idx| {
+    if (m.waitUntilAll(SlaveCtrlState.applicant, Slot.stateReached, .exit_on_fail)) |fail_slot_idx| {
         log.err("core-{}: did not become an applicant", .{m.slots[fail_slot_idx].rawId()});
         return error.CoreNotApplicant;
     }
