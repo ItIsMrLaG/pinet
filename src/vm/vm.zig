@@ -16,10 +16,18 @@ const Name = Types.Name;
 const Special = Types.Special;
 const EquationUnnormalized = Types.EquationUnnormalized;
 
-pub const Builtin = @import("builtin.zig");
 pub const Core = @import("core.zig");
+const CoreMode = @import("core_types.zig").CoreMode;
+const CoreId = @import("core_types.zig").CoreId;
+const CoreRc = @import("core_types.zig").CoreRc;
+const CoreRole = @import("core_types.zig").CoreRole;
+
+pub const Config = @import("config.zig").Config;
+
 pub const MainCtrl = @import("mt/main_ctrl.zig");
 pub const WorkerCtrl = @import("mt/worker_ctrl.zig");
+
+pub const Builtin = @import("builtin.zig");
 pub const Importer = @import("importer.zig");
 pub const Interaction = @import("interactions.zig");
 const Normalize = @import("normalize.zig");
@@ -30,7 +38,7 @@ const Self = VM;
 
 const getUser = "getUser";
 
-config: Config,
+cfg: Config,
 
 global_ctx: GlobalCtx,
 runtime: *Runtime,
@@ -42,24 +50,6 @@ main_core: Core,
 cores: []Core,
 
 var available_core_id: usize = 0;
-
-pub const Config = struct {
-    pub const Error = error{
-        NotSupported,
-    };
-
-    cores_num: usize,
-    heap_size: usize,
-
-    warmup: bool = false,
-
-    pub fn isValid(cfg: *const Config) Error!void {
-        // TODO:(kogora): multithread version
-        if (cfg.cores_num != 1) {
-            return Error.NotSupported;
-        }
-    }
-};
 
 pub const GlobalCtx = struct {
     agent_heap: Memory.Heap(Agent),
@@ -219,8 +209,8 @@ fn createWorkerCores(
     const start_id = available_core_id;
     for (cores, start_id..) |*c, core_id| {
         c.* = Core.init(
-            Core.CoreId{ .worker = @intCast(core_id) },
-            Core.CoreMode.singleThread,
+            CoreId{ .worker = @intCast(core_id) },
+            CoreMode.singleThread,
             runtime,
             Core.CoreCtrl{ .worker = worker_ctrl },
             global_ctx.createLocal(runtime.gpa),
@@ -239,13 +229,11 @@ pub fn deinit(self: *Self) void {
     if (self.main_ctrl) |main_ctrl| self.runtime.gpa.destroy(main_ctrl);
 }
 
-pub fn init(runtime: *Runtime, config: Config) !Self {
-    try config.isValid();
+pub fn init(runtime: *Runtime, cfg: Config) !Self {
+    try cfg.isValid();
 
-    const mode: Core.CoreMode = if (config.cores_num == 1) .singleThread else .multiThread;
-
-    // TODO:(kogora): multithread version
-    std.debug.assert(mode == Core.CoreMode.singleThread);
+    const mode = cfg.getMode();
+    std.debug.assert(mode == CoreMode.singleThread); // TODO:(kogora): multithread version
 
     var main_core: Core = undefined;
     var main_ctrl: ?*MainCtrl = null;
@@ -253,13 +241,13 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
     var worker_ctrl: ?*WorkerCtrl = null;
     var cores: []Core = &.{};
 
-    var global_ctx = try GlobalCtx.init(runtime, config);
+    var global_ctx = try GlobalCtx.init(runtime, cfg);
     errdefer global_ctx.deinit(runtime.gpa);
 
     switch (mode) {
         .singleThread => {
             main_core = Core.init(
-                Core.CoreId{ .main = {} },
+                CoreId{ .main = {} },
                 mode,
                 runtime,
                 null,
@@ -273,7 +261,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
             main_ctrl = created_main_ctrl;
 
             main_core = Core.init(
-                Core.CoreId{ .main = {} },
+                CoreId{ .main = {} },
                 mode,
                 runtime,
                 Core.CoreCtrl{ .main = created_main_ctrl },
@@ -285,7 +273,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
             created_worker_ctrl.* = WorkerCtrl.init();
             worker_ctrl = created_worker_ctrl;
 
-            cores = try createWorkerCores(runtime, global_ctx, config.cores_num, created_worker_ctrl);
+            cores = try createWorkerCores(runtime, global_ctx, cfg.cores_num, created_worker_ctrl);
             errdefer destroyWorkerCores(cores, &global_ctx, runtime);
         },
     }
@@ -297,7 +285,7 @@ pub fn init(runtime: *Runtime, config: Config) !Self {
         .worker_ctrl = worker_ctrl,
         .global_ctx = global_ctx,
         .runtime = runtime,
-        .config = config,
+        .cfg = cfg,
     };
 }
 
@@ -454,31 +442,30 @@ inline fn prepareActivePair(self: *Self, ap: AST.ActivePair) !void {
 }
 
 inline fn execActivePairVmCore(self: *Self) !void {
-    _ = try self.main_core.runEquations();
+    try self.main_core.eval();
 }
 
 inline fn execActivePairMultiCores(self: *Self) !void {
-    if (self.config.warmup) {
-        const rc = try self.main_core.runEquations();
-        if (rc == Core.CoreRc.finishRc) {
-            return;
-        }
-
+    // TODO:(kogora) implement warmup
+    std.debug.assert(!self.cfg.warmup);
+    if (self.cfg.warmup) {
+        try self.main_core.eval();
         self.global_ctx.balanceEquations();
+        return;
     }
 
     // TODO:(kogora): multithread version
-    _ = try self.cores[0].runEquations();
+    try self.cores[0].eval();
 }
 
-inline fn execActivePairMode(self: *Self, mode: Core.CoreMode) !void {
+inline fn execActivePairMode(self: *Self, mode: CoreMode) !void {
     switch (mode) {
         .singleThread => try self.execActivePairVmCore(),
         .multiThread => try self.execActivePairMultiCores(),
     }
 }
 
-inline fn execActivePair(self: *Self, mode: Core.CoreMode) !void {
+inline fn execActivePair(self: *Self, mode: CoreMode) !void {
     if (BuildConfig.debug_printing.benchmark) {
         const start = std.Io.Clock.awake.now(self.runtime.io);
         try self.execActivePairMode(mode);
